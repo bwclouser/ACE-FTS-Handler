@@ -258,9 +258,19 @@ END
 ;
 ; MODIFICATION HISTORY:
 ;   Written by: Ben Clouser, 3/3/21
+;   Added support for v4p1p2, 12/8/21
 ;-
 
-PRO ACEData::loadFiles,fnames
+PRO ACEData::loadFiles,fnames,version=version
+
+  IF KEYWORD_SET(version) THEN BEGIN
+    CASE version OF
+      'p1p2': molnameid=11
+      ELSE: molnameid=10
+    ENDCASE
+  ENDIF ELSE BEGIN
+    molnameid=10
+  ENDELSE
 
   n_files=size(fnames,/n_elements)
   mollist=list()
@@ -273,7 +283,7 @@ PRO ACEData::loadFiles,fnames
     res=execute(cmd)
 
     ;get molecule name
-    cmd0='mol=ncdf_varinq(id,10)'
+    cmd0='mol=ncdf_varinq(id,molnameid)'
     res=execute(cmd0)
 
     ;get altitude
@@ -316,7 +326,7 @@ PRO ACEData::loadFiles,fnames
     cmd1='ncdf_varget,id,lonid,lon'+mol.name
     res=execute(cmd0+' & '+cmd1)
 
-    cmd1='ncdf_varget,id,10,'+mol.name
+    cmd1='ncdf_varget,id,molnameid,'+mol.name
     res=execute(cmd1)
 
     ;get orbit id
@@ -340,17 +350,17 @@ PRO ACEData::loadFiles,fnames
     res=execute(cmd0+' & '+cmd1)
 
     ;get error for molecule
-    cmd0='mol_err=ncdf_varinq(id,11)'
+    cmd0='mol_err=ncdf_varinq(id,molnameid+1)'
     res=execute(cmd0)
 
-    cmd1='ncdf_varget,id,11,'+mol_err.name
+    cmd1='ncdf_varget,id,molnameid+1,'+mol_err.name
     res=execute(cmd1)
 
     cmd0='npass_'+mol.name+'=n_elements(lon'+mol.name+')'
     cmd1=mol.name+'_str={name:"'+mol.name+'",npass:npass_'+mol.name+',alt:alt,srss:srss'+mol.name+',orbit:orbit_'+mol.name+',year:year'+mol.name+',month:month'+mol.name+',day:day'+mol.name+',hour:hour'+mol.name+',lat:lat'+mol.name+',lon:lon'+mol.name+',mixrat:'+mol.name+',mixrat_err:'+mol.name+'_error,temp:temp_'+mol.name+',pres:pres_'+mol.name+'}'
     cmd2='mollist.add,'+mol.name+'_str'
     res=execute(cmd0+' & '+cmd1+' & '+cmd2)
-
+    
   endfor
   
   (*self.raw)=mollist
@@ -585,7 +595,9 @@ if n_elements(elements) ne 1 then begin
     ENDIF ELSE BEGIN
       PRINT,'ERROR: POINTER TO DMP NOT VALID'
     ENDELSE
-  ENDIF
+  ENDIF ELSE BEGIN
+    isFind=0
+  ENDELSE
   
   ;----- This if/else statement and for loop finds all orbits that are present in BOTH structures
   ; and returns their respective indices in the ind0 and ind1 arrays -------;
@@ -734,7 +746,7 @@ PRO ACEData::setParam,pName,pVal
         self.params.nLats=12
         self.params.nLons=16
         self.params.nAlts=1
-        self.params.yearlims=[2004,2020]
+        self.params.yearlims=[2004,2021]
         self.params.monthlims=[6,8]
         self.params.daylims=[1,31]
         self.params.hourlims=[1d-4,24d0-1d-4]
@@ -754,7 +766,7 @@ PRO ACEData::setParam,pName,pVal
         self.params.nLats=1
         self.params.nLons=1
         self.params.nAlts=22
-        self.params.yearlims=[2004,2020]
+        self.params.yearlims=[2004,2021]
         self.params.monthlims=[6,8]
         self.params.daylims=[1,31]
         self.params.hourlims=[1d-4,24d0-1d-4]
