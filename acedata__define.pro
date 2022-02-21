@@ -81,6 +81,8 @@
 ;         Added ACEData::makeMeridianPlot
 ;         Added ACEData::loadDMP
 ;         Fixed Error in orbIDs pointers
+;       v0.2.1
+;         Added support for v4.1/4.2 data
 ;-
 
 ;+
@@ -757,7 +759,7 @@ PRO ACEData::setParam,pName,pVal
         self.params.tMod=1
         self.params.eMod=1
         self.params.bMod=1
-        self.params.dmp_path='/Users/benclouser/Data/ACE/ACE-DMPSv4p120210415111208/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
+        self.params.dmp_path='/Users/benclouser/Data/ACE/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
       END
       'monsProf': BEGIN
         self.params.latlims=[5,35]
@@ -777,7 +779,7 @@ PRO ACEData::setParam,pName,pVal
         self.params.tMod=1
         self.params.eMod=1
         self.params.bMod=1
-        self.params.dmp_path='/Users/benclouser/Data/ACE/ACE-DMPSv4p120210415111208/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
+        self.params.dmp_path='/Users/benclouser/Data/ACE/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
       END
      ELSE: print,'Parameter name not found'
      ENDCASE
