@@ -275,7 +275,7 @@ END
 ;   Added support for v4p1p2, 12/8/21
 ;-
 
-PRO ACEData::loadFiles,fnames,version=version
+PRO ACEData::loadFiles,fnames,version=version,primeMerid=primeMerid
 
   IF KEYWORD_SET(version) THEN BEGIN
     CASE version OF
@@ -338,6 +338,9 @@ PRO ACEData::loadFiles,fnames,version=version
     ;get longitude
     cmd0='lonid=ncdf_varid(id,"longitude")'
     cmd1='ncdf_varget,id,lonid,lon'+mol.name
+    IF KEYWORD_SET(primeMerid) THEN BEGIN
+      cmd1+=' & lon'+mol.name+'[WHERE(lon'+mol.name+' LT 0)]+=360'
+    ENDIF
     res=execute(cmd0+' & '+cmd1)
 
     cmd1='ncdf_varget,id,molnameid,'+mol.name
@@ -573,6 +576,7 @@ END
 ;
 ; MODIFICATION HISTORY:
 ;   Written by: Ben Clouser, 3/3/21
+;   BWC, 6/8/24: 
 ;-
 
 PRO ACEData::harmonize,elements,addDMP=addDMP
@@ -602,6 +606,7 @@ if n_elements(elements) ne 1 then begin
     IF PTR_VALID(self.dmp) THEN BEGIN
       IF *self.dmp ne !NULL THEN BEGIN
         isFind=1
+        self.params.isDMP=1B
         ind2=[]
       ENDIF ELSE BEGIN
         PRINT,'ERROR: DMP NOT LOADED'
@@ -672,16 +677,18 @@ if n_elements(elements) ne 1 then begin
   IF isFind THEN BEGIN
     pt=(*self.dmp).theta[*,ind2]
     pt=[pt,FLTARR(75,N_ELEMENTS(ind2))]
-    molout={nmols:n_mols,name0:mol0.name,name1:mol1.name,npass:n_elements(ind0),alt:mol0.alt,srss:mol0.srss[ind0],orbit:mol0.orbit[ind0],year:mol0.year[ind0],month:mol0.month[ind0],day:mol0.day[ind0],hour:mol0.hour[ind0],juldays:juldays,lat:mol0.lat[ind0],lon:mol0.lon[ind0],mixrat0:mol0.mixrat[*,ind0],mixrat0_err:mol0.mixrat_err[*,ind0],mixrat1:mol1.mixrat[*,ind1],ratio:mol1.mixrat[*,ind1]/mol0.mixrat[*,ind0],mixrat1_err:mol1.mixrat_err[*,ind1],temp:mol0.temp[*,ind0],pres:mol0.pres[*,ind0],pt:pt}
+    t_dmp=(*self.dmp).temp[*,ind2]
+    t_dmp=[t_dmp,FLTARR(75,N_ELEMENTS(ind2))]
+    molout={nmols:n_mols,name0:mol0.name,name1:mol1.name,npass:n_elements(ind0),alt:mol0.alt,srss:mol0.srss[ind0],orbit:mol0.orbit[ind0],year:mol0.year[ind0],month:mol0.month[ind0],day:mol0.day[ind0],hour:mol0.hour[ind0],juldays:juldays,lat:mol0.lat[ind0],lon:mol0.lon[ind0],mixrat0:mol0.mixrat[*,ind0],mixrat0_err:mol0.mixrat_err[*,ind0],mixrat1:mol1.mixrat[*,ind1],ratio:mol1.mixrat[*,ind1]/mol0.mixrat[*,ind0],mixrat1_err:mol1.mixrat_err[*,ind1],temp:mol0.temp[*,ind0],pres:mol0.pres[*,ind0],pt:pt,t_dmp:t_dmp}
   ENDIF ELSE BEGIN
-    molout={nmols:n_mols,name0:mol0.name,name1:mol1.name,npass:n_elements(ind0),alt:mol0.alt,srss:mol0.srss[ind0],orbit:mol0.orbit[ind0],year:mol0.year[ind0],month:mol0.month[ind0],day:mol0.day[ind0],hour:mol0.hour[ind0],juldays:juldays,lat:mol0.lat[ind0],lon:mol0.lon[ind0],mixrat0:mol0.mixrat[*,ind0],mixrat0_err:mol0.mixrat_err[*,ind0],mixrat1:mol1.mixrat[*,ind1],ratio:mol1.mixrat[*,ind1]/mol0.mixrat[*,ind0],mixrat1_err:mol1.mixrat_err[*,ind1],temp:mol0.temp[*,ind0],pres:mol0.pres[*,ind0],pt:mol0.temp*(1d0/mol0.pres)^.286d0} 
+    molout={nmols:n_mols,name0:mol0.name,name1:mol1.name,npass:n_elements(ind0),alt:mol0.alt,srss:mol0.srss[ind0],orbit:mol0.orbit[ind0],year:mol0.year[ind0],month:mol0.month[ind0],day:mol0.day[ind0],hour:mol0.hour[ind0],juldays:juldays,lat:mol0.lat[ind0],lon:mol0.lon[ind0],mixrat0:mol0.mixrat[*,ind0],mixrat0_err:mol0.mixrat_err[*,ind0],mixrat1:mol1.mixrat[*,ind1],ratio:mol1.mixrat[*,ind1]/mol0.mixrat[*,ind0],mixrat1_err:mol1.mixrat_err[*,ind1],temp:mol0.temp[*,ind0],pres:mol0.pres[*,ind0],pt:mol0.temp[*,ind0]*(1d0/mol0.pres[*,ind0])^.286d0,t_dmp:mol0.pres[*,ind0]*!Values.F_NAN} 
   ENDELSE
   
 endif else begin
 
   juldays=julday(mol0.month,mol0.day,mol0.year,mol0.hour,0d0,0d0)
 
-  molout={nmols:n_mols,name0:mol0.name,npass:mol0.npass,alt:mol0.alt,srss:mol0.srss,orbit:mol0.orbit,year:mol0.year,month:mol0.month,day:mol0.day,hour:mol0.hour,juldays:juldays,lat:mol0.lat,lon:mol0.lon,mixrat0:mol0.mixrat,mixrat0_err:mol0.mixrat_err,temp:mol0.temp,pres:mol0.pres,pt:mol0.temp*(1d0/mol0.pres)^.286d0}
+  molout={nmols:n_mols,name0:mol0.name,npass:mol0.npass,alt:mol0.alt,srss:mol0.srss,orbit:mol0.orbit,year:mol0.year,month:mol0.month,day:mol0.day,hour:mol0.hour,juldays:juldays,lat:mol0.lat,lon:mol0.lon,mixrat0:mol0.mixrat,mixrat0_err:mol0.mixrat_err,temp:mol0.temp,pres:mol0.pres,pt:mol0.temp*(1d0/mol0.pres)^.286d0,t_dmp:mol0.pres*!Values.F_NAN}
 
 endelse
 
@@ -747,6 +754,17 @@ PRO ACEData::setParam,pName,pVal
   names=tag_names(self.params)
   isParam=where(names.contains(pName,/FOLD_CASE) eq 1)
   if isParam[0] ne -1 then begin
+    IF pName EQ 'dmp_path' THEN BEGIN
+      IF pVal EQ 'v4p1' THEN BEGIN
+        pVal='/media/benjamin/Data/ACE/ACE-DMPSv4p120210415111208/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
+      ENDIF
+      IF pVal EQ 'v4p1p2' THEN BEGIN
+        pVal='/media/benjamin/Data/ACE/ACE-DMPSv4p1p2/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
+      ENDIF
+      IF pVal EQ 'v5' THEN BEGIN
+        pVal='/media/benjamin/Data/ACE/ACE-DMPSv5p2/ACEFTS_L2_v5p2_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
+      ENDIF
+    ENDIF
     cmd='self.params.'+pName+'=pVal'
     res=execute(cmd)
     result=1
@@ -761,8 +779,8 @@ PRO ACEData::setParam,pName,pVal
         self.params.latlims=[-70,70]
         self.params.lonlims=[-180,180]
         self.params.altlims=[16,17]
-        self.params.nLats=12
-        self.params.nLons=16
+        self.params.nLats=10
+        self.params.nLons=15
         self.params.nAlts=1
         self.params.yearlims=[2004,2022]
         self.params.monthlims=[6,8]
@@ -775,7 +793,7 @@ PRO ACEData::setParam,pName,pVal
         self.params.tMod=1
         self.params.eMod=1
         self.params.bMod=1
-        self.params.dmp_path='/media/benjamin/Data/ACE/ACE-DMPSv4p1p2/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
+        ;self.params.dmp_path='/media/benjamin/Data/ACE/ACE-DMPSv4p1p2/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
       END
         'htStandard': BEGIN
           self.params.latlims=[-60,60]
@@ -795,7 +813,7 @@ PRO ACEData::setParam,pName,pVal
           self.params.tMod=1
           self.params.eMod=1
           self.params.bMod=1
-          self.params.dmp_path='/media/benjamin/Data/ACE/ACE-DMPSv4p1p2/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
+          ;self.params.dmp_path='/media/benjamin/Data/ACE/ACE-DMPSv4p1p2/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
         END
       'monsProf': BEGIN
         self.params.latlims=[5,35]
@@ -815,7 +833,7 @@ PRO ACEData::setParam,pName,pVal
         self.params.tMod=1
         self.params.eMod=1
         self.params.bMod=1
-        self.params.dmp_path='/media/benjamin/Data/ACE/ACE-DMPSv4p1p2/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
+        ;self.params.dmp_path='/media/benjamin/Data/ACE/ACE-DMPSv4p1p2/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
       END
       'OsanProf': BEGIN
         self.params.latlims=[10,45]
@@ -835,7 +853,7 @@ PRO ACEData::setParam,pName,pVal
         self.params.tMod=1
         self.params.eMod=1
         self.params.bMod=1
-        self.params.dmp_path='/media/benjamin/Data/ACE/ACE-DMPSv4p1p2/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
+        ;self.params.dmp_path='/media/benjamin/Data/ACE/ACE-DMPSv4p1p2/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
       END
       'NAMProf': BEGIN
         self.params.latlims=[10,50]
@@ -855,7 +873,47 @@ PRO ACEData::setParam,pName,pVal
         self.params.tMod=1
         self.params.eMod=1
         self.params.bMod=1
-        self.params.dmp_path='/media/benjamin/Data/ACE/ACE-DMPSv4p1p2/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
+        ;self.params.dmp_path='/media/benjamin/Data/ACE/ACE-DMPSv4p1p2/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
+      END
+      'TRANSProf': BEGIN
+        self.params.latlims=[40,70]
+        self.params.lonlims=[-230,-120]
+        self.params.altlims=[8,30]
+        self.params.nLats=1
+        self.params.nLons=1
+        self.params.nAlts=22
+        self.params.yearlims=[2004,2022]
+        self.params.monthlims=[7,9]
+        self.params.daylims=[1,31]
+        self.params.hourlims=[1d-4,24d0-1d-4]
+        self.params.nTimes=1
+        self.params.eLim=1d-3
+        self.params.cuttype='pointwise'
+        self.params.sMod=1
+        self.params.tMod=1
+        self.params.eMod=1
+        self.params.bMod=1
+        ;self.params.dmp_path='/media/benjamin/Data/ACE/ACE-DMPSv4p1p2/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
+      END
+      'CRProf': BEGIN
+        self.params.latlims=[-10,20]
+        self.params.lonlims=[-100,-60]
+        self.params.altlims=[8,30]
+        self.params.nLats=1
+        self.params.nLons=1
+        self.params.nAlts=22
+        self.params.yearlims=[2004,2022]
+        self.params.monthlims=[7,9]
+        self.params.daylims=[1,31]
+        self.params.hourlims=[1d-4,24d0-1d-4]
+        self.params.nTimes=1
+        self.params.eLim=1d-3
+        self.params.cuttype='pointwise'
+        self.params.sMod=1
+        self.params.tMod=1
+        self.params.eMod=1
+        self.params.bMod=1
+        ;self.params.dmp_path='/media/benjamin/Data/ACE/ACE-DMPSv4p1p2/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
       END
 
 
@@ -877,7 +935,7 @@ PRO ACEData::setParam,pName,pVal
         self.params.tMod=1
         self.params.eMod=1
         self.params.bMod=1
-        self.params.dmp_path='/media/benjamin/Data/ACE/ACE-DMPSv4p1p2/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
+        ;self.params.dmp_path='/media/benjamin/Data/ACE/ACE-DMPSv4p1p2/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
       END
       'SHTime': BEGIN
         self.params.latlims=[-90,0]
@@ -897,7 +955,7 @@ PRO ACEData::setParam,pName,pVal
         self.params.tMod=1
         self.params.eMod=1
         self.params.bMod=1
-        self.params.dmp_path='/media/benjamin/Data/ACE/ACE-DMPSv4p1p2/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
+        ;self.params.dmp_path='/media/benjamin/Data/ACE/ACE-DMPSv4p1p2/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
       END
       'htHunga': BEGIN
         self.params.latlims=[-45,0]
@@ -917,7 +975,7 @@ PRO ACEData::setParam,pName,pVal
         self.params.tMod=1
         self.params.eMod=1
         self.params.bMod=1
-        self.params.dmp_path='/media/benjamin/Data/ACE/ACE-DMPSv4p1p2/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
+        ;self.params.dmp_path='/media/benjamin/Data/ACE/ACE-DMPSv4p1p2/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
         self.params.solidBlock=1
       END
       'SHPole': BEGIN
@@ -938,7 +996,48 @@ PRO ACEData::setParam,pName,pVal
         self.params.tMod=1
         self.params.eMod=1
         self.params.bMod=1
-        self.params.dmp_path='/media/benjamin/Data/ACE/ACE-DMPSv4p1p2/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
+        ;self.params.dmp_path='/media/benjamin/Data/ACE/ACE-DMPSv4p1p2/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
+      END
+      'SHPole2020': BEGIN
+        self.params.latlims=[-85,-60]
+        self.params.lonlims=[-180,180]
+        self.params.altlims=[12,40]
+        self.params.nLats=1
+        self.params.nLons=1
+        self.params.nAlts=28
+        self.params.yearlims=[2020,2020]
+        self.params.monthlims=[7,9]
+        self.params.daylims=[1,31]
+        self.params.hourlims=[1d-4,24d0-1d-4]
+        self.params.nTimes=1
+        self.params.eLim=1d-3
+        self.params.cuttype='pointwise'
+        self.params.sMod=1
+        self.params.tMod=1
+        self.params.eMod=1
+        self.params.bMod=1
+        ;self.params.dmp_path='/media/benjamin/Data/ACE/ACE-DMPSv4p1p2/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
+      END
+      'allMerid': BEGIN
+        self.params.latlims=[-85,85]
+        self.params.lonlims=[-180,180]
+        self.params.altlims=[5,40]
+        self.params.nLats=17
+        self.params.nLons=1
+        self.params.nAlts=35
+        self.params.yearlims=[2004,2024]
+        self.params.monthlims=[1,12]
+        self.params.daylims=[1,31]
+        self.params.hourlims=[1d-4,24d0-1d-4]
+        self.params.nTimes=1
+        self.params.eLim=1d-3
+        self.params.cuttype='pointwise'
+        self.params.sMod=1
+        self.params.tMod=1
+        self.params.eMod=1
+        self.params.bMod=1
+        self.params.solidBlock=1
+        ;self.params.dmp_path='/media/benjamin/Data/ACE/ACE-DMPSv4p1p2/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
       END
      ELSE: print,'Parameter name not found'
      ENDCASE
@@ -1076,36 +1175,39 @@ END
 ;   Written by: Ben Clouser, 3/3/21
 ;-
 
-FUNCTION ACEData::getOcc,orbids
+FUNCTION ACEData::getOcc,orbids,SEARCH=search
 
   nOccs=n_elements(orbids)
+
+IF KEYWORD_SET(search) THEN BEGIN
+  inds=[]
+
+  for i=0,nOccs-1 do begin
+    inds=[inds,where((*self.hmz).orbit eq orbids[i])]
+  endfor
+
+  inds=inds[where(inds ne -1,complement=k)]
+  nOccs=n_elements(inds)
+
+  if k[0] ne -1 then print,'Orbits ',orbids[k],' not found.'
+ENDIF ELSE BEGIN
   inds=orbids
+ENDELSE
 
-;  inds=ulonarr(nOccs)
-;
-;  for i=0,nOccs-1 do begin
-;    inds[i]=where((*self.hmz).orbit eq orbids[i])
-;  endfor
-;
-;  inds=inds[where(inds ne -1,compliment=k)]
-;  nOccs=n_elements(inds)
-;
-;  if k[0] ne -1 then print,'Orbits ',orbids[k],' not found.'
+CASE (*self.hmz).nmols OF
+  1: BEGIN
 
-  CASE (*self.hmz).nmols OF
-    1: BEGIN
+    out={nmols:(*self.hmz).nmols,name0:(*self.hmz).name0,npass:nOccs,alt:findgen(150)+.5,srss:(*self.hmz).srss[inds],orbit:(*self.hmz).orbit[inds],year:(*self.hmz).year[inds],month:(*self.hmz).month[inds],day:(*self.hmz).day[inds],hour:(*self.hmz).hour[inds],lat:(*self.hmz).lat[inds],lon:(*self.hmz).lon[inds],mixrat0:(*self.hmz).mixrat0[*,inds],mixrat0_err:(*self.hmz).mixrat0_err[*,inds],temp:(*self.hmz).temp[*,inds],pres:(*self.hmz).pres[*,inds],pt:(*self.hmz).pt[*,inds],t_dmp:(*self.hmz).t_dmp[*,inds]}
 
-      out={nmols:(*self.hmz).nmols,name0:(*self.hmz).name0,npass:nOccs,alt:findgen(150)+.5,srss:(*self.hmz).srss[inds],orbit:(*self.hmz).orbit[inds],year:(*self.hmz).year[inds],month:(*self.hmz).month[inds],day:(*self.hmz).day[inds],hour:(*self.hmz).hour[inds],lat:(*self.hmz).lat[inds],lon:(*self.hmz).lon[inds],mixrat0:(*self.hmz).mixrat0[*,inds],mixrat0_err:(*self.hmz).mixrat0_err[*,inds],temp:(*self.hmz).temp[*,inds],pres:(*self.hmz).pres[*,inds],pt:(*self.hmz).pt[*,inds]}
+  END
+  2: BEGIN
 
-    END
-    2: BEGIN
+    out={nmols:(*self.hmz).nmols,name0:(*self.hmz).name0,name1:(*self.hmz).name1,npass:nOccs,alt:findgen(150)+.5,srss:(*self.hmz).srss[inds],orbit:(*self.hmz).orbit[inds],year:(*self.hmz).year[inds],month:(*self.hmz).month[inds],day:(*self.hmz).day[inds],hour:(*self.hmz).hour[inds],lat:(*self.hmz).lat[inds],lon:(*self.hmz).lon[inds],mixrat0:(*self.hmz).mixrat0[*,inds],mixrat0_err:(*self.hmz).mixrat0_err[*,inds],mixrat1:(*self.hmz).mixrat1[*,inds],mixrat1_err:(*self.hmz).mixrat1_err[*,inds],ratio:(*self.hmz).ratio[*,inds],temp:(*self.hmz).temp[*,inds],pres:(*self.hmz).pres[*,inds],pt:(*self.hmz).pt[*,inds],t_dmp:(*self.hmz).t_dmp[*,inds]}
+    ;stop
+  END
+ENDCASE
 
-      out={nmols:(*self.hmz).nmols,name0:(*self.hmz).name0,name1:(*self.hmz).name1,npass:nOccs,alt:findgen(150)+.5,srss:(*self.hmz).srss[inds],orbit:(*self.hmz).orbit[inds],year:(*self.hmz).year[inds],month:(*self.hmz).month[inds],day:(*self.hmz).day[inds],hour:(*self.hmz).hour[inds],lat:(*self.hmz).lat[inds],lon:(*self.hmz).lon[inds],mixrat0:(*self.hmz).mixrat0[*,inds],mixrat0_err:(*self.hmz).mixrat0_err[*,inds],mixrat1:(*self.hmz).mixrat1[*,inds],mixrat1_err:(*self.hmz).mixrat1_err[*,inds],ratio:(*self.hmz).ratio[*,inds],temp:(*self.hmz).temp[*,inds],pres:(*self.hmz).pres[*,inds],pt:(*self.hmz).pt[*,inds]}
-
-    END
-  ENDCASE
-
-  return,out
+RETURN,out
 
 END
 
@@ -1206,16 +1308,30 @@ pro ACEData::setTimeFlag,sunrise=sunrise,sunset=sunset
     endfor
     
     if self.params.monthlims[1] ne 0 then begin 
-      if self.params.monthlims[0] ge self.params.monthlims[1] then monthInds=[indgen(12.-self.params.monthlims[0]+1)+self.params.monthlims[0],indgen(self.params.monthlims[1])+1] else monthInds=indgen(self.params.monthlims[1]-self.params.monthlims[0]+1)+self.params.monthlims[0]
-      monthIncl=intarr((*self.hmz).npass)
-      for ii=0,n_elements(monthInds)-1 do begin
-        jmth=where((*self.hmz).month eq monthInds[ii])
-        monthIncl[jmth]=1
-        mth_str+=mth_lab[monthInds[ii]-1]
-      endfor
+      monthIncl=INTARR((*self.hmz).npass)
+      if self.params.monthlims[0] ge self.params.monthlims[1] THEN BEGIN 
+      ;monthInds=[indgen(12.-self.params.monthlims[0]+1)+self.params.monthlims[0],indgen(self.params.monthlims[1])+1] 
+      ;ENDIF ELSE BEGIN
+      ;  monthInds=indgen(self.params.monthlims[1]-self.params.monthlims[0]+1)+self.params.monthlims[0]
+      ;ENDELSE
+      ;monthIncl=intarr((*self.hmz).npass)
+      ;for ii=0,n_elements(monthInds)-1 do begin
+      ;  jmth=where((*self.hmz).month eq monthInds[ii])
+      ;  monthIncl[jmth]=1
+      ;  mth_str+=mth_lab[monthInds[ii]-1]
+      ;endfor
+      jmth=WHERE((*self.hmz).month GE self.params.monthlims[0] OR (*self.hmz).month LE self.params.monthlims[1])
+      mth_str=mth_lab[[indgen(12.-self.params.monthlims[0]+1)+self.params.monthlims[0],indgen(self.params.monthlims[1])+1]-1]
+      ENDIF ELSE BEGIN
+      jmth=WHERE((*self.hmz).month GE self.params.monthlims[0] AND (*self.hmz).month LE self.params.monthlims[1])
+      mth_str=mth_lab[indgen(self.params.monthlims[1]-self.params.monthlims[0]+1)+self.params.monthlims[0]-1]
+      ENDELSE
+      monthIncl[jmth]=1
     endif else begin
       monthIncl=intarr((*self.hmz).npass)+1
     endelse
+    
+    ;stop
     
     if self.params.daylims[1] ne 0 then begin 
       if self.params.daylims[0] ge self.params.daylims[1] then begin
@@ -1227,6 +1343,7 @@ pro ACEData::setTimeFlag,sunrise=sunrise,sunset=sunset
       for ii=0,n_elements(dayInds)-1 do begin
         jdy=where((*self.hmz).day eq dayInds[ii])
         dayIncl[jdy]=1
+        ;stop
       endfor
     endif else begin
       dayIncl=intarr((*self.hmz).npass)+1
@@ -1255,10 +1372,12 @@ pro ACEData::setTimeFlag,sunrise=sunrise,sunset=sunset
     endif else begin
       (*self.flags).tflag=(yearIncl AND monthIncl AND dayIncl AND hourIncl)
     endelse
-    
-    ;stop
-  
-    self.params.mth_str=mth_str
+
+    mstr=''
+    FOREACH mth,mth_str DO BEGIN
+      mstr+=mth
+    ENDFOREACH
+    self.params.mth_str=mstr
   
   ENDIF ELSE BEGIN
     
@@ -1471,7 +1590,9 @@ PRO ACEData::setOpMask,blats,blons,balts,jdays=jdays,byears=byears,bmonths=bmont
   IF KEYWORD_SET(jdays) THEN BEGIN
     k=WHERE((*self.hmz).juldays GE jdays[0] AND (*self.hmz).juldays LE jdays[1] AND ((*self.hmz).lat GE blats[0]) AND ((*self.hmz).lat LE blats[1]) AND ((*self.hmz).lon GE blons[0]) AND ((*self.hmz).lon LE blons[1]),complement=j)
   ENDIF ELSE BEGIN
-    k=WHERE(((*self.hmz).year GE byears[0]) AND ((*self.hmz).year LE byears[1]) AND ((*self.hmz).month GE bmonths[0]) AND ((*self.hmz).month LE bmonths[1]) AND ((*self.hmz).day GE bdays[0]) AND ((*self.hmz).day LE bdays[1]) AND ((*self.hmz).hour GE bhours[0]) AND ((*self.hmz).hour LE bhours[1]) AND ((*self.hmz).lat GE blats[0]) AND ((*self.hmz).lat LE blats[1]) AND ((*self.hmz).lon GE blons[0]) AND ((*self.hmz).lon LE blons[1]),complement=j)
+    ;k=WHERE(((*self.hmz).year GE byears[0]) AND ((*self.hmz).year LE byears[1]) AND ((*self.hmz).month GE bmonths[0]) AND ((*self.hmz).month LE bmonths[1]) AND ((*self.hmz).day GE bdays[0]) AND ((*self.hmz).day LE bdays[1]) AND ((*self.hmz).hour GE bhours[0]) AND ((*self.hmz).hour LE bhours[1]) AND ((*self.hmz).lat GE blats[0]) AND ((*self.hmz).lat LE blats[1]) AND ((*self.hmz).lon GE blons[0]) AND ((*self.hmz).lon LE blons[1]),complement=j)
+    k=WHERE((*self.flags).tflag AND ((*self.hmz).lat GE blats[0]) AND ((*self.hmz).lat LE blats[1]) AND ((*self.hmz).lon GE blons[0]) AND ((*self.hmz).lon LE blons[1]),complement=j)
+  
   ENDELSE
   (*self.opMask)[*,k]=1
   (*self.opMask)[*,j]=0
@@ -1550,9 +1671,9 @@ PRO ACEData::resetBlocks
     PTR_FREE,self.blocks
     self.blocks=PTR_NEW(/ALLOCATE)
     if (*self.hmz).nmols eq 1 then begin
-      D={nmols:(*self.hmz).nmols,name0:(*self.hmz).name0,yearlims:[0d0,0d0],monthlims:[0d0,0d0],daylims:[0d0,0d0],hourlims:[0d0,0d0],jullims:[0d0,0d0],latlims:[0d0,0d0],lonlims:[0d0,0d0],altlims:[0d0,0d0],mean0:0.,sd0:0.,bw0:fltarr(5),meant:0.,sdt:0.,bwt:fltarr(5),meanp:0.,sdp:0.,bwp:fltarr(5),meanpt:0.,sdpt:0.,bwpt:fltarr(5),meanLat:0.,sdLat:0.,meanLon:0.,sdLon:0.,nPts:0,orbIDs:PTR_NEW()}
+      D={nmols:(*self.hmz).nmols,name0:(*self.hmz).name0,yearlims:[0d0,0d0],monthlims:[0d0,0d0],daylims:[0d0,0d0],hourlims:[0d0,0d0],jullims:[0d0,0d0],latlims:[0d0,0d0],lonlims:[0d0,0d0],altlims:[0d0,0d0],mean0:0.,sd0:0.,bw0:fltarr(5),meant:0.,sdt:0.,bwt:fltarr(5),meanp:0.,sdp:0.,bwp:fltarr(5),meanpt:0.,sdpt:0.,bwpt:fltarr(5),meant_dmp:0.,sdt_dmp:0.,bwt_dmp:FLTARR(5),meanLat:0.,sdLat:0.,meanLon:0.,sdLon:0.,nPts:0,orbIDs:PTR_NEW()}
     endif else begin
-      D={nmols:(*self.hmz).nmols,name0:(*self.hmz).name0,yearlims:[0d0,0d0],monthlims:[0d0,0d0],daylims:[0d0,0d0],hourlims:[0d0,0d0],jullims:[0d0,0d0],latlims:[0d0,0d0],lonlims:[0d0,0d0],altlims:[0d0,0d0],mean0:0.,sd0:0.,bw0:fltarr(5),mean1:0.,sd1:0.,bw1:fltarr(5),meanRat:0.,sdRat:0.,bwRat:fltarr(5),meant:0.,sdt:0.,bwt:fltarr(5),meanp:0.,sdp:0.,bwp:fltarr(5),meanpt:0.,sdpt:0.,bwpt:fltarr(5),meanLat:0.,sdLat:0.,meanLon:0.,sdLon:0.,nPts:0,orbIDs:PTR_NEW()}
+      D={nmols:(*self.hmz).nmols,name0:(*self.hmz).name0,yearlims:[0d0,0d0],monthlims:[0d0,0d0],daylims:[0d0,0d0],hourlims:[0d0,0d0],jullims:[0d0,0d0],latlims:[0d0,0d0],lonlims:[0d0,0d0],altlims:[0d0,0d0],mean0:0.,sd0:0.,bw0:fltarr(5),mean1:0.,sd1:0.,bw1:fltarr(5),meanRat:0.,sdRat:0.,bwRat:fltarr(5),meant:0.,sdt:0.,bwt:fltarr(5),meanp:0.,sdp:0.,bwp:fltarr(5),meanpt:0.,sdpt:0.,bwpt:fltarr(5),meant_dmp:0.,sdt_dmp:0.,bwt_dmp:FLTARR(5),meanLat:0.,sdLat:0.,meanLon:0.,sdLon:0.,nPts:0,orbIDs:PTR_NEW()}
     endelse
     (*self.blocks)=replicate(D,self.params.nLats,self.params.nLons,self.params.nAlts,self.params.nTimes)
     nblocks=n_elements(*self.blocks)
@@ -1596,6 +1717,12 @@ PRO ACEData::reduceBlock,i,j,k,l
   finOrbs=floor(kGood/150)
   ndat=n_elements(kGood)
   
+  ;print,n_elements(startOrbs)
+  ;print,n_elements(goodOrbs)
+  ;print,finOrbs
+  
+  ;stop
+  
   mr0=(*self.hmz).mixrat0[*,startOrbs]
   mr0g=mr0[kGood]
   temp=(*self.hmz).temp[*,startOrbs]
@@ -1604,6 +1731,8 @@ PRO ACEData::reduceBlock,i,j,k,l
   presg=pres[kGood]
   pt=(*self.hmz).pt[*,startOrbs]
   ptg=pt[kGood]
+  tdmp=(*self.hmz).t_dmp[*,startOrbs]
+  tdmpg=tdmp[kGood]
   (*self.blocks)[i,j,k,l].mean0=mean(mr0g)
   (*self.blocks)[i,j,k,l].sd0=stddev(mr0g)
   (*self.blocks)[i,j,k,l].meant=mean(tempg)
@@ -1612,6 +1741,8 @@ PRO ACEData::reduceBlock,i,j,k,l
   (*self.blocks)[i,j,k,l].sdp=stddev(presg)
   (*self.blocks)[i,j,k,l].meanpt=mean(ptg)
   (*self.blocks)[i,j,k,l].sdpt=stddev(ptg)
+  (*self.blocks)[i,j,k,l].meant_dmp=mean(tdmpg)
+  (*self.blocks)[i,j,k,l].sdt_dmp=stddev(tdmpg)
   (*self.blocks)[i,j,k,l].meanLat=mean((*self.hmz).lat[startOrbs[finOrbs]])
   (*self.blocks)[i,j,k,l].meanLon=mean((*self.hmz).lon[startOrbs[finOrbs]])
   (*self.blocks)[i,j,k,l].nPts=ndat
@@ -1621,6 +1752,7 @@ PRO ACEData::reduceBlock,i,j,k,l
     (*self.blocks)[i,j,k,l].bwt=createboxplotdata(tempg)
     (*self.blocks)[i,j,k,l].bwp=createboxplotdata(presg)
     (*self.blocks)[i,j,k,l].bwpt=createboxplotdata(ptg)
+    IF self.params.isDMP THEN (*self.blocks)[i,j,k,l].bwt_dmp=createboxplotdata(tdmpg)
   endif
   if (*self.hmz).nmols gt 1 then begin
     mr1=(*self.hmz).mixrat0[*,startOrbs]
@@ -1647,11 +1779,11 @@ END
 ; =============================================================
 ;
 ; METHODNAME:
-;       ACEData::calcBlock
+;       ACEData::calcBlocks
 ;
 ; PURPOSE:
 ; 
-;       The ACEData::calcBlock calculates the parameters of interest for each lat/lot/alt/time
+;       The ACEData::calcBlocks calculates the parameters of interest for each lat/lot/alt/time
 ;       bin as defined by the flags and operational mask. Currently this includes the mean, sd,
 ;       and boxplot of each molecule and ratio, as well as temperature and pressure.
 ;
@@ -1730,11 +1862,13 @@ PRO ACEData::calcBlocks,useParam=useParam
     timesran[0,1]=months
     timesran[0,2]=days
     timesran[0,3]=hours
+    ;stop
     for l=0,self.params.nTimes-1 do begin
       ylims=[timesran[l,0],timesran[l+1,0]]
       mlims=[timesran[l,1],timesran[l+1,1]]
       dlims=[timesran[l,2],timesran[l+1,2]]
       hlims=[timesran[l,3],timesran[l+1,3]]
+        print,ylims,mlims,dlims,hlims
       for k=0,self.params.nAlts-1 do begin
         alims=altsran[k:k+1]
         ;stop
@@ -1875,19 +2009,22 @@ PRO ACEData::makeContour,ratPlot,mol0Plot,aLevels,useMedian=useMedian
   
   if (*self.hmz).nmols gt 1 then begin
     if keyword_set(useMedian) then rats=(*self.blocks).bwRat[2] else rats=(*self.blocks).meanRat
-    if keyword_set(savPlotRat) then mapRat=map('Geographic',center_longitude=180,limit=[-65,-180,65,180],dimensions=dim,position=posit,font_size=18,/buffer) else mapRat=map('Geographic',center_longitude=180,limit=[-65,-180,65,180],dimensions=dim,position=posit,font_size=18)
+    if keyword_set(savPlotRat) then mapRat=map('Geographic',center_longitude=180,limit=[-75,0,75,360],dimensions=dim,position=posit,font_size=18,/buffer) else mapRat=map('Geographic',center_longitude=180,limit=[-75,0,75,360],dimensions=dim,position=posit,font_size=18)
     ;stop
     ratios=interpolate(transpose((rats-1d0)*1d3),dindgen(self.params.nLons),dindgen(self.params.nLats),/grid)
+    
     ;cc=contour((rats-1d0)*1d3,(*self.blocks).meanLon,(*self.blocks).meanLat,c_value=([dindgen(17)]/16d0*.2d0-.76d0)*1d3,rgb_table=ct,/fill,/overplot)
-    cc=contour(ratios,lons,lats,c_value=([dindgen(17)]/16d0*.46d0-.76d0)*1d3,rgb_table=ct,/fill,/overplot)
-    mc=mapcontinents(/continents,limit=[-65,-180,65,180])
+    cc=contour(ratios,lons,lats,c_value=([dindgen(21)]/20d0*.30d0-.84d0)*1d3,rgb_table=ct,/fill,/overplot)
+    ;mc=mapcontinents(/continents,limit=[-65,-180,65,180])
+    mc=mapcontinents(/continents,limit=[-75,0,75,360])
     grid=mapRat.mapgrid
     grid.linestyle='dotted'
     grid.font_size=16
     grid.label_position=0
     mapRat.title=self.params.mth_str+' $\delta D$, '+string(alt_map,format='(F4.1)')+' km'
       mapRat.font_size=18
-    cb=colorbar(target=cc,title='$\delta D (‰)$',range=[-.760d0,-.500d0]*1d3,orientation=1,textpos=1,font_size=14)
+    cb=colorbar(target=cc,title='$\delta D (‰)$',range=[-.840d0,-.540d0]*1d3,orientation=1,textpos=1,font_size=14)
+      ;PRINT,'MADE CB'
     ratPlot=mapRat
     if keyword_set(savPlotRat) then begin
       ratPlot.save,savPlotRat,resolution=300
@@ -1895,12 +2032,13 @@ PRO ACEData::makeContour,ratPlot,mol0Plot,aLevels,useMedian=useMedian
     endif
     ;stop
   endif
-  if keyword_set(savPlot0) then map0=map('Geographic',center_longitude=90,limit=[-65,-180,65,180],dimensions=dim,position=posit,font_size=18,/buffer) else map0=map('Geographic',center_longitude=90,limit=[-65,-180,65,180],dimensions=dim,position=posit,font_size=18)
+  if keyword_set(savPlot0) then map0=map('Geographic',center_longitude=180,limit=[-75,0,75,360],dimensions=dim,position=posit,font_size=18,/buffer) else map0=map('Geographic',center_longitude=180,limit=[-75,0,75,360],dimensions=dim,position=posit,font_size=18)
   if keyword_set(useMedian) then mol0=(*self.blocks).bw0[2] else mol0=(*self.blocks).mean0
   mol0s=interpolate(transpose(mol0*1d6),dindgen(self.params.nLons),dindgen(self.params.nLats),/grid)
   ;cc=contour(mol0*1d6,(*self.blocks).meanLon,(*self.blocks).meanLat,c_value=mol0range,rgb_table=ct,/fill,/overplot)
   cc=contour(mol0s,lons,lats,c_value=mol0range,rgb_table=ct,/fill,/overplot)
-  mc=mapcontinents(/continents,limit=[-65,-180,65,180])
+  ;mc=mapcontinents(/continents,limit=[-65,-180,65,180])
+  mc=mapcontinents(/continents,limit=[-75,0,75,360])
   grid=map0.mapgrid
   grid.linestyle='dotted'
   grid.font_size=16
@@ -1959,8 +2097,13 @@ end
 ;   Written by: Ben Clouser, 3/22/21
 ;-
 
-PRO ACEData::makeMeridianPlot,ratPlot,mol0Plot,useMedian=useMedian
+PRO ACEData::makeMeridianPlot,ratPlot,mol0Plot,useMedian=useMedian,lats=lats,alts=alts,title=title,dimensions=dimensions,position=position,fs=fs
 
+  IF NOT KEYWORD_SET(title) THEN title=''
+  IF NOT KEYWORD_SET(dimensions) THEN dims=[1024,1024] ELSE dims=dimensions
+  IF NOT KEYWORD_SET(position) THEN pos=[0.1,0.1,0.85,0.9] ELSE pos=position
+  IF NOT KEYWORD_SET(fs) THEN fs=20 ELSE fs=fs
+  
   ct=colortable(72,/reverse)
 
   if keyword_set(useMedian) then rats=(*self.blocks).bwRat[2] else rats=(*self.blocks).meanRat
@@ -1968,25 +2111,29 @@ PRO ACEData::makeMeridianPlot,ratPlot,mol0Plot,useMedian=useMedian
   alts=(self.params.altlims[1]-self.params.altlims[0])/self.params.nAlts*dindgen(self.params.nAlts)+self.params.altlims[0]+.5
   alts=transpose(rebin(alts,self.params.nAlts,self.params.nLats))
   ;lats=(self.params.latlims[1]-self.params.latlims[0])/self.params.nLats*dindgen(self.params.nLats)+self.params.latlims[0]
-  cbrange=([dindgen(22)]/21d0*0.63d0-.76d0)*1d3
+  cbrange=([dindgen(21)]/20d0*0.46d0-.76d0)*1d3
+
   for i=0,n_longs-1 do begin
+    ratios=interpolate(reform((rats[*,i,*]-1d0)*1d3),dindgen(self.params.nLats),dindgen(self.params.nAlts),/grid)
     lats=reform((*self.blocks)[*,i,*].meanLat,self.params.nLats,self.params.nAlts)
-    ratPlot=contour((reform(rats[*,i,*],self.params.nLats,self.params.nAlts)-1)*1d3,lats,alts,c_value=cbrange,xrange=latlims,yrange=[8,40],font_size=18,axis_style=2,xthick=2,ythick=2,xtitle='Latitude',ytitle='Altitude (km)',rgb_table=colortable(72,/reverse),dimensions=[1024,1024],position=[0.1,0.1,0.85,0.9],/fill)
-    cb=colorbar(target=ratPlot,title='$\delta D (‰)$',range=[-.760,-.495]*1d3,orientation=1,textpos=1,font_size=14)
+    ratPlot=contour(reform((rats[*,i,*]-1d0)*1d3,self.params.nLats,self.params.nAlts),lats,alts,c_value=cbrange,xrange=latlims,yrange=[5,40],font_size=fs,axis_style=2,xthick=2,ythick=2,xtitle='Latitude',ytitle='Altitude (km)',rgb_table=colortable(72,/reverse),dimensions=dims,position=pos,/fill,title=title)
+    ;cb=colorbar(target=ratPlot,title='$\delta D (‰)$',range=[-.760,-.3]*1d3,orientation=1,textpos=1,font_size=14,position=[.88,.25,.91,.75])
+    
 
   endfor
 
-  if keyword_set(useMedian) then mol0=(*self.blocks).bw1[2] else mol0=(*self.blocks).mean0
+  if keyword_set(useMedian) then mol0=(*self.blocks).bw0[2] else mol0=(*self.blocks).mean0
   n_longs=self.params.nLons
   alts=(self.params.altlims[1]-self.params.altlims[0])/self.params.nAlts*dindgen(self.params.nAlts)+self.params.altlims[0]+.5
   alts=transpose(rebin(alts,self.params.nAlts,self.params.nLats))
   ;lats=(self.params.latlims[1]-self.params.latlims[0])/self.params.nLats*dindgen(self.params.nLats)+self.params.latlims[0]
   cbrange=[dindgen(21)]/20d0*12d0+2d0
   for i=0,n_longs-1 do begin
+    mol0s=interpolate(reform(mol0[*,i,*]*5d10),dindgen(self.params.nLats),dindgen(self.params.nAlts),/grid)
     lats=reform((*self.blocks)[*,i,*].meanLat,self.params.nLats,self.params.nAlts)
-    mol0Plot=contour((reform(mol0[*,i,*]*1d6,self.params.nLats,self.params.nAlts)-1),lats,alts,c_value=cbrange,xrange=latlims,yrange=[8,40],font_size=18,axis_style=2,xthick=2,ythick=2,xtitle='Latitude',ytitle='Altitude (km)',rgb_table=colortable(72,/reverse),dimensions=[1024,1024],position=[0.1,0.1,0.85,0.9],/fill)
-    cb=colorbar(target=mol0Plot,title='$H_2O (ppm)$',range=[3,15],orientation=1,textpos=1,font_size=14)
-
+    mol0Plot=contour(mol0s,lats,alts,c_value=cbrange,xrange=latlims,yrange=[5,40],font_size=fs,axis_style=2,xthick=2,ythick=2,xtitle='Latitude',ytitle='Altitude (km)',rgb_table=colortable(72,/reverse),dimensions=dims,position=pos,/fill,title=title)
+    ;cb=colorbar(target=mol0Plot,title='$H_2O (ppm)$',range=[3,15],orientation=1,textpos=1,font_size=14,position=[.88,.25,.91,.75])
+    print,fs
   endfor
   ;stop
 END
@@ -2090,10 +2237,11 @@ PRO ACEData::makeHeightTimePlot,mol0,rat0,alt_map=alt_map,yearlims=yearlims,mont
   ;stop
 END
 
-pro ACEData::makeMeanSD,xname,yname,spag,savPlot=savPlot,spaghetti=spaghetti,colorby=colorby,outcols=outcols
+pro ACEData::makeMeanSD,xname,yname,spag,savPlot=savPlot,spaghetti=spaghetti,colorby=colorby,outcols=outcols,title=title,nomean=nomean
 
   ct=colortable(72,/reverse)
-      nspg=n_elements(insrat)
+  nspg=n_elements(insrat)
+  IF NOT KEYWORD_SET(title) THEN title=''
       
       CASE yname OF
         'alt':BEGIN
@@ -2106,7 +2254,7 @@ pro ACEData::makeMeanSD,xname,yname,spag,savPlot=savPlot,spaghetti=spaghetti,col
           ymean=reform((*self.blocks).meanpt,self.params.nAlts)
           ytitle='$\Theta (K)$'
           yrange=[300,500]
-          cmdy='orbs.pt[jk]*1d6'
+          cmdy='orbs.pt[jk]'
         END
         'mol0':BEGIN
           ymean=reform((*self.blocks).mean0*1d6,self.params.nAlts)
@@ -2169,15 +2317,16 @@ pro ACEData::makeMeanSD,xname,yname,spag,savPlot=savPlot,spaghetti=spaghetti,col
         END
       ENDCASE
 
-      if keyword_set(savPlot) then spag=boxplot(ymean,xbw,xtitle=xtitle,ytitle=ytitle,font_size=16,xthick=2,ythick=2,/horizontal,xrange=xrange,yrange=yrange,dimensions=[640,720],/buffer) else spag=boxplot(ymean,xbw,xtitle=xtitle,ytitle=ytitle,font_size=16,xthick=2,ythick=2,/horizontal,xrange=xrange,yrange=yrange,dimensions=[640,720])
+      if keyword_set(savPlot) then spag=boxplot(ymean,xbw,xtitle=xtitle,ytitle=ytitle,font_size=16,xthick=2,ythick=2,/horizontal,xrange=xrange,yrange=yrange,dimensions=[640,720],title=title,/buffer) else spag=boxplot(ymean,xbw,xtitle=xtitle,ytitle=ytitle,font_size=16,xthick=2,ythick=2,/horizontal,xrange=xrange,yrange=yrange,dimensions=[640,720],title=title)
       map=map('Geographic',center_longitude=90,limit=[-75,-180,75,180],position=[0.63,0.82,.93,1.06],font_size=18,/current,axis_style=0,linestyle=6,label_show=0)
       mc=mapcontinents(/continents,limit=[-75,-180,75,180])
       coords=[[(*self.blocks)[0].lonlims[0],(*self.blocks)[0].latlims[1]],[(*self.blocks)[0].lonlims[1],(*self.blocks)[0].latlims[1]],[(*self.blocks)[0].lonlims[1],(*self.blocks)[0].latlims[0]],[(*self.blocks)[0].lonlims[0],(*self.blocks)[0].latlims[0]]]
       region=polygon(coords,target=map,/data,fill_color='green')
       spag.select
-      meanRat=plot(xmean,ymean,thick=2,'r',/overplot)
-      sdRat=polygon([xmean-xsd,reverse(xmean+xsd)],[ymean,reverse(ymean)],/data,/fill_background, FILL_COLOR="light steel blue",PATTERN_ORIENTATION=45,pattern_spacing=4,/overplot)
-
+      IF NOT KEYWORD_SET(nomean) THEN BEGIN
+        meanRat=plot(xmean,ymean,thick=2,'r',/overplot)
+        sdRat=polygon([xmean-xsd,reverse(xmean+xsd)],[ymean,reverse(ymean)],/data,/fill_background, FILL_COLOR="light steel blue",PATTERN_ORIENTATION=45,pattern_spacing=4,/overplot)
+      ENDIF
       if keyword_set(savPlot) then begin
         spag.save,savPlot+mth_str+'_Rat '+string(mean(mols.lat[jrat[insrat]]),format='(F7.2)')+' X '+string(mean(mols.lon[jrat[insrat]]),format='(F7.2)')+'.png',resolution=300
       endif
@@ -2189,6 +2338,7 @@ pro ACEData::makeMeanSD,xname,yname,spag,savPlot=savPlot,spaghetti=spaghetti,col
     norbs=(*self.blocks)[mx].npts
     dex=(*(*self.blocks)[mx].orbids)
     orbs=self.getOcc(dex)
+    ;print,dex
     for is=0,norbs-1 do begin
       
       IF KEYWORD_SET(colorby) THEN BEGIN
@@ -2223,7 +2373,7 @@ pro ACEData::makeMeanSD,xname,yname,spag,savPlot=savPlot,spaghetti=spaghetti,col
       ENDIF
 
     endfor
-    
+    spag=boxplot(ymean,xbw,xtitle=xtitle,ytitle=ytitle,font_size=16,thick=2,xthick=2,ythick=2,/horizontal,xrange=xrange,yrange=yrange,dimensions=[640,720],title=title,color='m',/OVERPLOT)
     IF KEYWORD_SET(outcols) THEN outcols=outcol.toarray(dimension=2)
     IF KEYWORD_SET(colorby) THEN cb=colorbar(target=spag,range=[self.params.latlims[0],self.params.latlims[1]],position=[0.03,0.0,0.35,0.03],title=colorby,font_size=10,textpos=1,rgb_table=ct)
   endif
@@ -2317,16 +2467,48 @@ pro ACEData::makeMeanSDTP,xname,yname,savPlot=savPlot
 
 end
 
+PRO ACEData::makeSpotMap,alts,altlims=altlims,outplot=outplot,postfix=postfix
+
+IF NOT KEYWORD_SET(altlims) THEN alims=DINDGEN(28)+12.5 ELSE alims=DINDGEN(altlims[1]-altlims[0]+1)+altlims[0]
+IF NOT KEYWORD_SET(postfix) THEN postfix=''
+
+
+nAlts=N_ELEMENTS(alts)
+
+pnull=plot([0,1],[0,1],layout=[5,nalts/5,1],axis_style=0,dimensions=[1800,640],/nodata)
+
+FOR i=0,nAlts-1 DO BEGIN
+  
+  map=map('Geographic',center_longitude=90,limit=[-90,-180,90,180],font_size=18,axis_style=0,linestyle=6,label_show=0,layout=[5,nAlts/5,i+1],margin=0.10,/current)
+  mc=mapcontinents(/continents,limit=[-90,-180,90,180])
+  xAlt=WHERE(alts[i] EQ alims)
+  
+  norbs=(*self.blocks)[0,0,xAlt].npts
+  dex=(*(*self.blocks)[0,0,xAlt].orbids)
+  orbs=self.getOcc(dex)
+
+  kAlt=WHERE(alts[i] EQ orbs.alt)
+  ;stop
+  dd=(orbs.ratio[kAlt,*]-1d0)*1d3
+  p=plot(orbs.lon,orbs.lat,'.',sym_filled=1,sym_size=10,vert_colors=BYTSCL(dd,min=-760,max=-300),rgb_table=colortable(72,/reverse),font_size=18,title=STRING(alts[i],FORMAT='(F5.1)')+' km',/overplot)
+  stop
+ENDFOR
+
+cb=colorbar(target=p,title='$\delta D (‰)$',range=[-.760d0,-.300d0]*1d3,position=[0.2,0.005,0.8,0.025],orientation=0,textpos=1,font_size=8)
+outplot=map
+
+END
+
 
 PRO ACEData::stopView
 
-  stop
+stop
   
 END
 
 PRO ACEData__define
 
-  A={paramsA,yearlims:[0.,0.],monthlims:[0.,0.],daylims:[0.,0.],hourlims:[0.,0.],jullims:[0.,0.],latlims:[0.,0.],lonlims:[0.,0.],altlims:[0.,0.],nTimes:0.,nLats:0.,nLons:0.,nAlts:0.,oParamName:'',oParamLims:[0.,0.],oParamNum:0.,mth_str:'',elim:0d0,cuttype:'',tMod:boolean(0),sMod:boolean(0),eMod:boolean(0),bMod:boolean(0),solidBlock:boolean(0),dmp_path:''}
+  A={paramsA,yearlims:[0.,0.],monthlims:[0.,0.],daylims:[0.,0.],hourlims:[0.,0.],jullims:[0.,0.],latlims:[0.,0.],lonlims:[0.,0.],altlims:[0.,0.],nTimes:0.,nLats:0.,nLons:0.,nAlts:0.,oParamName:'',oParamLims:[0.,0.],oParamNum:0.,mth_str:'',elim:0d0,cuttype:'',tMod:boolean(0),sMod:boolean(0),eMod:boolean(0),bMod:boolean(0),solidBlock:boolean(0),isDMP:boolean(0),dmp_path:''}
   struct={ACEData,raw:PTR_NEW(),hmz:PTR_NEW(),flags:PTR_NEW(),opMask:PTR_NEW(),blocks:PTR_NEW(),dmp:PTR_NEW(),params:A}
   
 end
