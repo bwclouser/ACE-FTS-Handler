@@ -1298,7 +1298,11 @@ PRO ACEData::areFlagsDefined
   if self.flags eq !null then begin
 
     self.flags=PTR_NEW(/ALLOCATE)
-    B={flags,tflag:boolarr(npass),sflag:boolarr(npass),eflag:boolarr(npass),aflag:boolarr(150,npass)}
+    ;----- Anonymous, not named. A named structure definition is cached for the
+    ; whole IDL session, so {flags,...} sized by npass raised a conflicting
+    ; definition error as soon as a second object with a different pass count
+    ; was created. -------;
+    B={tflag:boolarr(npass),sflag:boolarr(npass),eflag:boolarr(npass),aflag:boolarr(150,npass)}
     (*self.flags)=B
   endif
 
@@ -1884,7 +1888,7 @@ PRO ACEData::reduceBlock,i,j,k,l
     IF self.params.isDMP THEN (*self.blocks)[i,j,k,l].bwt_dmp=createboxplotdata(tdmpg)
   endif
   if (*self.hmz).nmols gt 1 then begin
-    mr1=(*self.hmz).mixrat0[*,startOrbs]
+    mr1=(*self.hmz).mixrat1[*,startOrbs]
     mr1g=mr1[kGood]
     rat0=(*self.hmz).ratio[*,startOrbs]
     rat0g=rat0[kGood]
