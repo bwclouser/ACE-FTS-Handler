@@ -339,7 +339,8 @@ PRO ACEData::loadFiles,fnames,version=version,primeMerid=primeMerid
     cmd0='lonid=ncdf_varid(id,"longitude")'
     cmd1='ncdf_varget,id,lonid,lon'+mol.name
     IF KEYWORD_SET(primeMerid) THEN BEGIN
-      cmd1+=' & lon'+mol.name+'[WHERE(lon'+mol.name+' LT 0)]+=360'
+      cmd1+=' & jneg=WHERE(lon'+mol.name+' LT 0,nneg)'
+      cmd1+=' & IF nneg GT 0 THEN lon'+mol.name+'[jneg]+=360'
     ENDIF
     res=execute(cmd0+' & '+cmd1)
 
@@ -627,8 +628,10 @@ if n_elements(elements) ne 1 then begin
         ind0=[ind0,i]
         ind1=[ind1,x]
         IF isFind THEN BEGIN
-          y=WHERE(orb0[i] EQ (*self.dmp).orbit AND srss0[i] EQ (*self.dmp).srss)
-          ind2=[ind2,y]
+          ;----- A matching DMP entry is not guaranteed to exist. Record -1 for the
+          ; misses so ind2 stays aligned with ind0, and fill them in below. -------;
+          y=WHERE(orb0[i] EQ (*self.dmp).orbit AND srss0[i] EQ (*self.dmp).srss,ny)
+          IF ny GT 0 THEN ind2=[ind2,y[0]] ELSE ind2=[ind2,-1L]
         ENDIF
       endif
     endfor
@@ -639,8 +642,8 @@ if n_elements(elements) ne 1 then begin
         ind0=[ind0,x]
         ind1=[ind1,i]
         IF isFind THEN BEGIN
-          y=WHERE(orb1[i] EQ (*self.dmp).orbit AND srss1[i] EQ (*self.dmp).srss)
-          ind2=[ind2,y]
+          y=WHERE(orb1[i] EQ (*self.dmp).orbit AND srss1[i] EQ (*self.dmp).srss,ny)
+          IF ny GT 0 THEN ind2=[ind2,y[0]] ELSE ind2=[ind2,-1L]
         ENDIF
       endif
     endfor
@@ -672,13 +675,30 @@ if n_elements(elements) ne 1 then begin
 ;    molout={nmols:n_mols,name0:mol0.name,name1:mol1.name,npass:n_elements(ind0),alt:mol0.alt,srss:mol0.srss[ind0],orbit:mol0.orbit[ind0],year:mol0.year[ind0],month:mol0.month[ind0],day:mol0.day[ind0],hour:mol0.hour[ind0],lat:mol0.lat[ind0],lon:mol0.lon[ind0],mixrat0:mol0.mixrat[*,ind0],mixrat0_err:mol0.mixrat_err[*,ind0],mixrat1:mol1.mixrat[*,ind1],ratio:mol1.mixrat[*,ind1]/mol0.mixrat[*,ind0],mixrat1_err:mol1.mixrat_err[*,ind1],temp:mol0.temp[*,ind0],pres:mol0.pres[*,ind0],pt:mol0.temp*(1d0/mol0.pres)^.286d0}
 ;  ENDELSE  
 
+  IF N_ELEMENTS(ind0) EQ 0 THEN BEGIN
+    PRINT,'ERROR: NO OCCULTATIONS COMMON TO '+name0+' AND '+name1
+    RETURN
+  ENDIF
+
   juldays=julday(mol0.month[ind0],mol0.day[ind0],mol0.year[ind0],mol0.hour[ind0],0d0,0d0)
 
   IF isFind THEN BEGIN
-    pt=(*self.dmp).theta[*,ind2]
-    pt=[pt,FLTARR(75,N_ELEMENTS(ind2))]
-    t_dmp=(*self.dmp).temp[*,ind2]
-    t_dmp=[t_dmp,FLTARR(75,N_ELEMENTS(ind2))]
+    ;----- Occultations with no DMP match (ind2 EQ -1) are left as NaN rather than
+    ; silently picking up the last column of the DMP arrays. Levels above the
+    ; 75-level DMP grid are NaN for the same reason. -------;
+    nHarm=N_ELEMENTS(ind2)
+    jDMP=WHERE(ind2 GE 0,nDMP,COMPLEMENT=jNoDMP,NCOMPLEMENT=nNoDMP)
+
+    pt=FLTARR(150,nHarm)+!VALUES.F_NAN
+    t_dmp=FLTARR(150,nHarm)+!VALUES.F_NAN
+
+    IF nDMP GT 0 THEN BEGIN
+      pt[0:74,jDMP]=(*self.dmp).theta[*,ind2[jDMP]]
+      t_dmp[0:74,jDMP]=(*self.dmp).temp[*,ind2[jDMP]]
+    ENDIF
+
+    IF nNoDMP GT 0 THEN PRINT,'WARNING: NO DMP MATCH FOR '+STRTRIM(nNoDMP,2)+' OF '+STRTRIM(nHarm,2)+' OCCULTATIONS'
+
     molout={nmols:n_mols,name0:mol0.name,name1:mol1.name,npass:n_elements(ind0),alt:mol0.alt,srss:mol0.srss[ind0],orbit:mol0.orbit[ind0],year:mol0.year[ind0],month:mol0.month[ind0],day:mol0.day[ind0],hour:mol0.hour[ind0],juldays:juldays,lat:mol0.lat[ind0],lon:mol0.lon[ind0],mixrat0:mol0.mixrat[*,ind0],mixrat0_err:mol0.mixrat_err[*,ind0],mixrat1:mol1.mixrat[*,ind1],ratio:mol1.mixrat[*,ind1]/mol0.mixrat[*,ind0],mixrat1_err:mol1.mixrat_err[*,ind1],temp:mol0.temp[*,ind0],pres:mol0.pres[*,ind0],pt:pt,t_dmp:t_dmp}
   ENDIF ELSE BEGIN
     molout={nmols:n_mols,name0:mol0.name,name1:mol1.name,npass:n_elements(ind0),alt:mol0.alt,srss:mol0.srss[ind0],orbit:mol0.orbit[ind0],year:mol0.year[ind0],month:mol0.month[ind0],day:mol0.day[ind0],hour:mol0.hour[ind0],juldays:juldays,lat:mol0.lat[ind0],lon:mol0.lon[ind0],mixrat0:mol0.mixrat[*,ind0],mixrat0_err:mol0.mixrat_err[*,ind0],mixrat1:mol1.mixrat[*,ind1],ratio:mol1.mixrat[*,ind1]/mol0.mixrat[*,ind0],mixrat1_err:mol1.mixrat_err[*,ind1],temp:mol0.temp[*,ind0],pres:mol0.pres[*,ind0],pt:mol0.temp[*,ind0]*(1d0/mol0.pres[*,ind0])^.286d0,t_dmp:mol0.pres[*,ind0]*!Values.F_NAN} 
@@ -1181,15 +1201,24 @@ FUNCTION ACEData::getOcc,orbids,SEARCH=search
 
 IF KEYWORD_SET(search) THEN BEGIN
   inds=[]
+  missing=[]
 
+  ;----- Accumulate only the orbits that were actually found. The missing IDs are
+  ; tracked separately because one orbit ID can match more than one index, so the
+  ; positions in inds do not correspond to positions in orbids. -------;
   for i=0,nOccs-1 do begin
-    inds=[inds,where((*self.hmz).orbit eq orbids[i])]
+    x=where((*self.hmz).orbit eq orbids[i],nx)
+    if nx gt 0 then inds=[inds,x] else missing=[missing,orbids[i]]
   endfor
 
-  inds=inds[where(inds ne -1,complement=k)]
-  nOccs=n_elements(inds)
+  if n_elements(missing) gt 0 then print,'Orbits ',missing,' not found.'
 
-  if k[0] ne -1 then print,'Orbits ',orbids[k],' not found.'
+  if n_elements(inds) eq 0 then begin
+    print,'No requested orbits found in the harmonized data.'
+    RETURN,!NULL
+  endif
+
+  nOccs=n_elements(inds)
 ENDIF ELSE BEGIN
   inds=orbids
 ENDELSE
@@ -1303,8 +1332,8 @@ pro ACEData::setTimeFlag,sunrise=sunrise,sunset=sunset
     yearInds=indgen(self.params.yearlims[1]-self.params.yearlims[0]+1)+self.params.yearlims[0]
     yearIncl=intarr((*self.hmz).npass)
     for ii=0,n_elements(yearInds)-1 do begin
-      jyr=where((*self.hmz).year eq yearInds[ii])
-      yearIncl[jyr]=1
+      jyr=where((*self.hmz).year eq yearInds[ii],njyr)
+      if njyr gt 0 then yearIncl[jyr]=1
     endfor
     
     if self.params.monthlims[1] ne 0 then begin 
@@ -1320,13 +1349,13 @@ pro ACEData::setTimeFlag,sunrise=sunrise,sunset=sunset
       ;  monthIncl[jmth]=1
       ;  mth_str+=mth_lab[monthInds[ii]-1]
       ;endfor
-      jmth=WHERE((*self.hmz).month GE self.params.monthlims[0] OR (*self.hmz).month LE self.params.monthlims[1])
+      jmth=WHERE((*self.hmz).month GE self.params.monthlims[0] OR (*self.hmz).month LE self.params.monthlims[1],njmth)
       mth_str=mth_lab[[indgen(12.-self.params.monthlims[0]+1)+self.params.monthlims[0],indgen(self.params.monthlims[1])+1]-1]
       ENDIF ELSE BEGIN
-      jmth=WHERE((*self.hmz).month GE self.params.monthlims[0] AND (*self.hmz).month LE self.params.monthlims[1])
+      jmth=WHERE((*self.hmz).month GE self.params.monthlims[0] AND (*self.hmz).month LE self.params.monthlims[1],njmth)
       mth_str=mth_lab[indgen(self.params.monthlims[1]-self.params.monthlims[0]+1)+self.params.monthlims[0]-1]
       ENDELSE
-      monthIncl[jmth]=1
+      if njmth gt 0 then monthIncl[jmth]=1
     endif else begin
       monthIncl=intarr((*self.hmz).npass)+1
     endelse
@@ -1341,8 +1370,8 @@ pro ACEData::setTimeFlag,sunrise=sunrise,sunset=sunset
       endelse
       dayIncl=intarr((*self.hmz).npass)
       for ii=0,n_elements(dayInds)-1 do begin
-        jdy=where((*self.hmz).day eq dayInds[ii])
-        dayIncl[jdy]=1
+        jdy=where((*self.hmz).day eq dayInds[ii],njdy)
+        if njdy gt 0 then dayIncl[jdy]=1
         ;stop
       endfor
     endif else begin
@@ -1384,8 +1413,11 @@ pro ACEData::setTimeFlag,sunrise=sunrise,sunset=sunset
     dayLast=julday(self.params.monthlims[1],self.params.daylims[1],self.params.yearlims[1],self.params.hourlims[1],0,0)
     dayFirst=julday(self.params.monthlims[0],self.params.daylims[0],self.params.yearlims[0],self.params.hourlims[0],0,0)
 
-    julIncl=WHERE((*self.hmz).juldays GE self.params.jullims[0] AND (*self.hmz).juldays LE self.params.jullims[1])
-    (*self.flags).tflag=julIncl
+    ;----- WHERE returns indices, not a mask, so build the flag by subscripting
+    ; a zeroed array rather than assigning the index list to tflag. -------;
+    julIncl=WHERE((*self.hmz).juldays GE self.params.jullims[0] AND (*self.hmz).juldays LE self.params.jullims[1],njulIncl)
+    (*self.flags).tflag[*]=0
+    IF njulIncl GT 0 THEN (*self.flags).tflag[julIncl]=1
     
   ENDELSE
 
@@ -1412,9 +1444,9 @@ PRO ACEData::setSpaceFlag
 
   self.areFlagsDefined
 
-  kran=WHERE((*self.hmz).lat GE self.params.latlims[0] AND (*self.hmz).lat LE self.params.latlims[1] AND (*self.hmz).lon ge self.params.lonlims[0] AND (*self.hmz).lon LE self.params.lonlims[1],complement=jran)
-  (*self.flags).sflag[kran]=1
-  (*self.flags).sflag[jran]=0
+  kran=WHERE((*self.hmz).lat GE self.params.latlims[0] AND (*self.hmz).lat LE self.params.latlims[1] AND (*self.hmz).lon ge self.params.lonlims[0] AND (*self.hmz).lon LE self.params.lonlims[1],nkran,complement=jran,ncomplement=njran)
+  IF nkran GT 0 THEN (*self.flags).sflag[kran]=1
+  IF njran GT 0 THEN (*self.flags).sflag[jran]=0
   
   self.params.sMod=0
   
@@ -1440,43 +1472,51 @@ PRO ACEData::setErrorFlag,cutByTemp=cutByTemp,cutByRatio=cutByRatio
   
   (*self.flags).eflag=1
   IF KEYWORD_SET(cutByTemp) THEN BEGIN
-    k=WHERE((*self.hmz).temp LE cutByTemp[0])
-    z=k MOD 150
-    v=WHERE(z GE cutByTemp[1] AND z LE cutByTemp[2])
-    
-    (*self.flags).eflag[(floor(k[v]/150))[uniq(floor(k[v]/150))]]=0
+    k=WHERE((*self.hmz).temp LE cutByTemp[0],nk)
+    IF nk GT 0 THEN BEGIN
+      z=k MOD 150
+      v=WHERE(z GE cutByTemp[1] AND z LE cutByTemp[2],nv)
+      IF nv GT 0 THEN BEGIN
+        kOrb=k[v]/150
+        (*self.flags).eflag[kOrb[uniq(kOrb)]]=0
+      ENDIF
+    ENDIF
     ;stop
   ENDIF
-  
+
   (*self.flags).aflag[*,*]=1
   npass=(*self.hmz).npass
-  
+  nbad1=0
+  nbad2=0
+
   CASE (*self.hmz).nmols OF
     1: BEGIN
 
-      bad1=where((*self.hmz).mixrat0 eq -999. or (*self.hmz).mixrat0_err eq -999. or (*self.hmz).mixrat0_err eq -888.)
+      bad1=where((*self.hmz).mixrat0 eq -999. or (*self.hmz).mixrat0_err eq -999. or (*self.hmz).mixrat0_err eq -888.,nbad1)
       IF self.params.cuttype.contains('pointwise',/FOLD_CASE) THEN BEGIN
-        bad2=where((*self.hmz).mixrat0_err ge self.params.eLim)
+        bad2=where((*self.hmz).mixrat0_err ge self.params.eLim,nbad2)
       ENDIF
       IF self.params.cuttype.contains('scanwise',/FOLD_CASE) THEN BEGIN
-        (*self.flags).eflag[FLOOR(WHERE((*self.hmz).mixrat0_err ge self.params.eLim)/150.)]=0
+        jscan=WHERE((*self.hmz).mixrat0_err ge self.params.eLim,njscan)
+        IF njscan GT 0 THEN (*self.flags).eflag[jscan/150]=0
       ENDIF
     END
     2: BEGIN
 
-      bad1=where((*self.hmz).mixrat0 eq -999. or (*self.hmz).mixrat0_err eq -999. or (*self.hmz).mixrat0_err eq -888. or (*self.hmz).mixrat1 eq -999. or (*self.hmz).mixrat1_err eq -999. or (*self.hmz).mixrat1_err eq -888.)
+      bad1=where((*self.hmz).mixrat0 eq -999. or (*self.hmz).mixrat0_err eq -999. or (*self.hmz).mixrat0_err eq -888. or (*self.hmz).mixrat1 eq -999. or (*self.hmz).mixrat1_err eq -999. or (*self.hmz).mixrat1_err eq -888.,nbad1)
       IF self.params.cuttype.contains('pointwise',/FOLD_CASE) THEN BEGIN
-        bad2=where((*self.hmz).mixrat0_err ge self.params.eLim OR (*self.hmz).mixrat1_err ge self.params.eLim)
+        bad2=where((*self.hmz).mixrat0_err ge self.params.eLim OR (*self.hmz).mixrat1_err ge self.params.eLim,nbad2)
       ENDIF
       IF self.params.cuttype.contains('scanwise',/FOLD_CASE) THEN BEGIN
-        (*self.flags).eflag[FLOOR(WHERE((*self.hmz).mixrat0_err GE self.params.eLim AND (*self.hmz).mixrat1_err GE self.params.elim)/150.)]=0
+        jscan=WHERE((*self.hmz).mixrat0_err GE self.params.eLim AND (*self.hmz).mixrat1_err GE self.params.elim,njscan)
+        IF njscan GT 0 THEN (*self.flags).eflag[jscan/150]=0
       ENDIF
     END
   ENDCASE
 
-  (*self.flags).aflag[bad1]=0
+  IF nbad1 GT 0 THEN (*self.flags).aflag[bad1]=0
   IF self.params.cuttype.contains('pointwise',/FOLD_CASE) THEN BEGIN
-    (*self.flags).aflag[bad2]=0
+    IF nbad2 GT 0 THEN (*self.flags).aflag[bad2]=0
   ENDIF
   ;stop
 
@@ -1588,23 +1628,29 @@ PRO ACEData::setOpMask,blats,blons,balts,jdays=jdays,byears=byears,bmonths=bmont
 ;    hourIncl=intarr((*self.hmz).npass)+1
 ;  endelse
   IF KEYWORD_SET(jdays) THEN BEGIN
-    k=WHERE((*self.hmz).juldays GE jdays[0] AND (*self.hmz).juldays LE jdays[1] AND ((*self.hmz).lat GE blats[0]) AND ((*self.hmz).lat LE blats[1]) AND ((*self.hmz).lon GE blons[0]) AND ((*self.hmz).lon LE blons[1]),complement=j)
+    k=WHERE((*self.hmz).juldays GE jdays[0] AND (*self.hmz).juldays LE jdays[1] AND ((*self.hmz).lat GE blats[0]) AND ((*self.hmz).lat LE blats[1]) AND ((*self.hmz).lon GE blons[0]) AND ((*self.hmz).lon LE blons[1]),nk,complement=j,ncomplement=nj)
   ENDIF ELSE BEGIN
     ;k=WHERE(((*self.hmz).year GE byears[0]) AND ((*self.hmz).year LE byears[1]) AND ((*self.hmz).month GE bmonths[0]) AND ((*self.hmz).month LE bmonths[1]) AND ((*self.hmz).day GE bdays[0]) AND ((*self.hmz).day LE bdays[1]) AND ((*self.hmz).hour GE bhours[0]) AND ((*self.hmz).hour LE bhours[1]) AND ((*self.hmz).lat GE blats[0]) AND ((*self.hmz).lat LE blats[1]) AND ((*self.hmz).lon GE blons[0]) AND ((*self.hmz).lon LE blons[1]),complement=j)
-    k=WHERE((*self.flags).tflag AND ((*self.hmz).lat GE blats[0]) AND ((*self.hmz).lat LE blats[1]) AND ((*self.hmz).lon GE blons[0]) AND ((*self.hmz).lon LE blons[1]),complement=j)
-  
+    k=WHERE((*self.flags).tflag AND ((*self.hmz).lat GE blats[0]) AND ((*self.hmz).lat LE blats[1]) AND ((*self.hmz).lon GE blons[0]) AND ((*self.hmz).lon LE blons[1]),nk,complement=j,ncomplement=nj)
+
   ENDELSE
-  (*self.opMask)[*,k]=1
-  (*self.opMask)[*,j]=0
+  IF nk GT 0 THEN (*self.opMask)[*,k]=1
+  IF nj GT 0 THEN (*self.opMask)[*,j]=0
   ;deal with altitudes here
 
   if balts[0] gt 0 or balts[1] lt 150 then begin
-    
+
     altind0=intarr(150)
     altind0[*]=1
-    
-    if balts[0] gt 0 then altind0[WHERE((*self.hmz).alt le balts[0])]=0
-    if balts[1] lt 150 then altind0[WHERE((*self.hmz).alt ge balts[1])]=0
+
+    if balts[0] gt 0 then begin
+      jlo=WHERE((*self.hmz).alt le balts[0],njlo)
+      if njlo gt 0 then altind0[jlo]=0
+    endif
+    if balts[1] lt 150 then begin
+      jhi=WHERE((*self.hmz).alt ge balts[1],njhi)
+      if njhi gt 0 then altind0[jhi]=0
+    endif
     altind=rebin(altind0,150,(*self.hmz).npass)
     
     (*self.opMask)=((*self.opMask) AND altind)
@@ -1687,6 +1733,63 @@ END
 ; =============================================================
 ;
 ; METHODNAME:
+;       ACEData::emptyBlock
+;
+; PURPOSE:
+;       The ACEData::emptyBlock procedure method is a private
+;       method and is not intended to be called directly. It marks a single
+;       reduced-data block as containing no data, by setting every statistic
+;       to NaN and the point count to zero. This is what ACEData::reduceBlock
+;       calls when no retrievals fall inside the block, so that empty bins are
+;       distinguishable from bins that genuinely averaged to zero.
+;
+; MODIFICATION HISTORY:
+;   Written by: Ben Clouser, 8/3/25
+;-
+
+PRO ACEData::emptyBlock,i,j,k,l
+
+  nan=!VALUES.F_NAN
+  nanbw=FLTARR(5)+nan
+
+  (*self.blocks)[i,j,k,l].mean0=nan
+  (*self.blocks)[i,j,k,l].sd0=nan
+  (*self.blocks)[i,j,k,l].bw0=nanbw
+  (*self.blocks)[i,j,k,l].meant=nan
+  (*self.blocks)[i,j,k,l].sdt=nan
+  (*self.blocks)[i,j,k,l].bwt=nanbw
+  (*self.blocks)[i,j,k,l].meanp=nan
+  (*self.blocks)[i,j,k,l].sdp=nan
+  (*self.blocks)[i,j,k,l].bwp=nanbw
+  (*self.blocks)[i,j,k,l].meanpt=nan
+  (*self.blocks)[i,j,k,l].sdpt=nan
+  (*self.blocks)[i,j,k,l].bwpt=nanbw
+  (*self.blocks)[i,j,k,l].meant_dmp=nan
+  (*self.blocks)[i,j,k,l].sdt_dmp=nan
+  (*self.blocks)[i,j,k,l].bwt_dmp=nanbw
+  (*self.blocks)[i,j,k,l].meanLat=nan
+  (*self.blocks)[i,j,k,l].sdLat=nan
+  (*self.blocks)[i,j,k,l].meanLon=nan
+  (*self.blocks)[i,j,k,l].sdLon=nan
+  (*self.blocks)[i,j,k,l].nPts=0
+
+  IF (*self.hmz).nmols GT 1 THEN BEGIN
+    (*self.blocks)[i,j,k,l].mean1=nan
+    (*self.blocks)[i,j,k,l].sd1=nan
+    (*self.blocks)[i,j,k,l].bw1=nanbw
+    (*self.blocks)[i,j,k,l].meanRat=nan
+    (*self.blocks)[i,j,k,l].sdRat=nan
+    (*self.blocks)[i,j,k,l].bwRat=nanbw
+  ENDIF
+
+  IF PTR_VALID((*self.blocks)[i,j,k,l].orbIDs) THEN (*(*self.blocks)[i,j,k,l].orbIDs)=!NULL
+
+END
+
+;+
+; =============================================================
+;
+; METHODNAME:
 ;       ACEData::reduceBlocks
 ;
 ; PURPOSE:
@@ -1706,17 +1809,32 @@ PRO ACEData::reduceBlock,i,j,k,l
   npass=(*self.hmz).npass
 
   goodOrbs=((*self.flags).sflag AND (*self.flags).tflag AND (*self.flags).eflag)
-  startOrbs=where(goodOrbs eq 1)
-  
+  startOrbs=where(goodOrbs eq 1,nStart)
+
+  ;----- If nothing survives the global flags, WHERE returns -1 and every slice
+  ; below would silently read the last occultation instead. Mark the block empty
+  ; and bail out. -------;
+  IF nStart EQ 0 THEN BEGIN
+    self.emptyBlock,i,j,k,l
+    RETURN
+  ENDIF
+
   tempAFlags=(*self.flags).aflag[*,startOrbs]
   tempOpMask=(*self.opMask)[*,startOrbs]
-  
+
   fFlag=((*self.flags).aflag[*,startOrbs] AND (*self.opMask)[*,startOrbs])
-  
-  kGood=where(fFlag eq 1)
-  finOrbs=floor(kGood/150)
-  ndat=n_elements(kGood)
-  
+
+  kGood=where(fFlag eq 1,ndat)
+
+  ;----- Same again for the points inside this particular bin. Note that the old
+  ; ndat=n_elements(kGood) reported 1 for an empty bin, not 0. -------;
+  IF ndat EQ 0 THEN BEGIN
+    self.emptyBlock,i,j,k,l
+    RETURN
+  ENDIF
+
+  finOrbs=kGood/150
+
   ;print,n_elements(startOrbs)
   ;print,n_elements(goodOrbs)
   ;print,finOrbs
@@ -1734,15 +1852,26 @@ PRO ACEData::reduceBlock,i,j,k,l
   tdmp=(*self.hmz).t_dmp[*,startOrbs]
   tdmpg=tdmp[kGood]
   (*self.blocks)[i,j,k,l].mean0=mean(mr0g)
-  (*self.blocks)[i,j,k,l].sd0=stddev(mr0g)
   (*self.blocks)[i,j,k,l].meant=mean(tempg)
-  (*self.blocks)[i,j,k,l].sdt=stddev(tempg)
   (*self.blocks)[i,j,k,l].meanp=mean(presg)
-  (*self.blocks)[i,j,k,l].sdp=stddev(presg)
   (*self.blocks)[i,j,k,l].meanpt=mean(ptg)
-  (*self.blocks)[i,j,k,l].sdpt=stddev(ptg)
   (*self.blocks)[i,j,k,l].meant_dmp=mean(tdmpg)
-  (*self.blocks)[i,j,k,l].sdt_dmp=stddev(tdmpg)
+
+  ;----- STDDEV requires at least two points. -------;
+  IF ndat GE 2 THEN BEGIN
+    (*self.blocks)[i,j,k,l].sd0=stddev(mr0g)
+    (*self.blocks)[i,j,k,l].sdt=stddev(tempg)
+    (*self.blocks)[i,j,k,l].sdp=stddev(presg)
+    (*self.blocks)[i,j,k,l].sdpt=stddev(ptg)
+    (*self.blocks)[i,j,k,l].sdt_dmp=stddev(tdmpg)
+  ENDIF ELSE BEGIN
+    (*self.blocks)[i,j,k,l].sd0=!VALUES.F_NAN
+    (*self.blocks)[i,j,k,l].sdt=!VALUES.F_NAN
+    (*self.blocks)[i,j,k,l].sdp=!VALUES.F_NAN
+    (*self.blocks)[i,j,k,l].sdpt=!VALUES.F_NAN
+    (*self.blocks)[i,j,k,l].sdt_dmp=!VALUES.F_NAN
+  ENDELSE
+
   (*self.blocks)[i,j,k,l].meanLat=mean((*self.hmz).lat[startOrbs[finOrbs]])
   (*self.blocks)[i,j,k,l].meanLon=mean((*self.hmz).lon[startOrbs[finOrbs]])
   (*self.blocks)[i,j,k,l].nPts=ndat
@@ -1760,9 +1889,15 @@ PRO ACEData::reduceBlock,i,j,k,l
     rat0=(*self.hmz).ratio[*,startOrbs]
     rat0g=rat0[kGood]
     (*self.blocks)[i,j,k,l].mean1=mean(mr1g)
-    (*self.blocks)[i,j,k,l].sd1=stddev(mr1g)
     (*self.blocks)[i,j,k,l].meanRat=mean(rat0g)
-    (*self.blocks)[i,j,k,l].sdRat=stddev(rat0g)
+
+    IF ndat GE 2 THEN BEGIN
+      (*self.blocks)[i,j,k,l].sd1=stddev(mr1g)
+      (*self.blocks)[i,j,k,l].sdRat=stddev(rat0g)
+    ENDIF ELSE BEGIN
+      (*self.blocks)[i,j,k,l].sd1=!VALUES.F_NAN
+      (*self.blocks)[i,j,k,l].sdRat=!VALUES.F_NAN
+    ENDELSE
 
     if ndat ge 5 then begin
       (*self.blocks)[i,j,k,l].bw1=createboxplotdata(mr1g)
@@ -2357,7 +2492,8 @@ pro ACEData::makeMeanSD,xname,yname,spag,savPlot=savPlot,spaghetti=spaghetti,col
         color=[0S,0S,0S]
       ENDELSE
       ;print,color
-      jk=where((*self.flags).aflag[*,dex[is]] eq 1)
+      jk=where((*self.flags).aflag[*,dex[is]] eq 1,njk)
+      IF njk EQ 0 THEN CONTINUE
       jk1=where(ymean ge orbs.alt[jk[0]])
       
       cmd='p=plot('+cmdx+','+cmdy+',transparency=85,color=color,/overplot)'
@@ -2481,13 +2617,26 @@ FOR i=0,nAlts-1 DO BEGIN
   
   map=map('Geographic',center_longitude=90,limit=[-90,-180,90,180],font_size=18,axis_style=0,linestyle=6,label_show=0,layout=[5,nAlts/5,i+1],margin=0.10,/current)
   mc=mapcontinents(/continents,limit=[-90,-180,90,180])
-  xAlt=WHERE(alts[i] EQ alims)
-  
+  xAlt=WHERE(alts[i] EQ alims,nxAlt)
+  IF nxAlt EQ 0 THEN BEGIN
+    PRINT,'Altitude ',alts[i],' not found in altlims. Skipping.'
+    CONTINUE
+  ENDIF
+  xAlt=xAlt[0]
+
   norbs=(*self.blocks)[0,0,xAlt].npts
   dex=(*(*self.blocks)[0,0,xAlt].orbids)
+  IF N_ELEMENTS(dex) EQ 0 THEN BEGIN
+    PRINT,'No retrievals in the block at ',alts[i],' km. Skipping.'
+    CONTINUE
+  ENDIF
   orbs=self.getOcc(dex)
 
-  kAlt=WHERE(alts[i] EQ orbs.alt)
+  kAlt=WHERE(alts[i] EQ orbs.alt,nkAlt)
+  IF nkAlt EQ 0 THEN BEGIN
+    PRINT,'Altitude ',alts[i],' not found on the retrieval grid. Skipping.'
+    CONTINUE
+  ENDIF
   ;stop
   dd=(orbs.ratio[kAlt,*]-1d0)*1d3
   p=plot(orbs.lon,orbs.lat,'.',sym_filled=1,sym_size=10,vert_colors=BYTSCL(dd,min=-760,max=-300),rgb_table=colortable(72,/reverse),font_size=18,title=STRING(alts[i],FORMAT='(F5.1)')+' km',/overplot)
