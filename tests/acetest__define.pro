@@ -70,9 +70,16 @@ END
 ;
 ;       fillVal   [level, firstPass, lastPass]. Sets mixrat0 to the -999
 ;                 fill value over that inclusive pass range at that level.
+;
+;       global    Spread latitude over [-85,85], longitude over [-180,180] and
+;                 the dates over 2004-2023, instead of the one-degree-per-pass
+;                 march and the single June 2010 date. Intended for timing
+;                 work, where a realistic pass count is needed and the exact
+;                 membership of a block does not matter.
 ;-
 
-PRO ACETest::injectHmz,npass=npass,nmols=nmols,badErr=badErr,fillVal=fillVal
+PRO ACETest::injectHmz,npass=npass,nmols=nmols,badErr=badErr,fillVal=fillVal, $
+                       global=global
 
   COMPILE_OPT IDL2
 
@@ -85,14 +92,29 @@ PRO ACETest::injectHmz,npass=npass,nmols=nmols,badErr=badErr,fillVal=fillVal
   p=FINDGEN(npass)
   a=FINDGEN(nlev)
 
-  lat=5.0+p
-  lon=100.0+p
+  IF KEYWORD_SET(global) THEN BEGIN
 
-  ; June 2010 for every pass, so the global time flag includes all of them.
-  year=INTARR(npass)+2010
-  month=INTARR(npass)+6
-  day=FIX(p) MOD 28 + 1
-  hour=FLTARR(npass)+12.0
+    lat=-85.0+170.0*p/(npass-1)
+    ; A short cycle in longitude so successive passes are not colinear in
+    ; lat/lon, which would put every occultation in one diagonal of bins.
+    lon=-180.0+360.0*(p MOD 97)/96.0
+
+    jd0=JULDAY(1,1,2004,0,0,0)
+    jd1=JULDAY(12,31,2023,0,0,0)
+    CALDAT,jd0+(jd1-jd0)*p/(npass-1),month,day,year,hour,mn,sc
+
+  ENDIF ELSE BEGIN
+
+    lat=5.0+p
+    lon=100.0+p
+
+    ; June 2010 for every pass, so the global time flag includes all of them.
+    year=INTARR(npass)+2010
+    month=INTARR(npass)+6
+    day=FIX(p) MOD 28 + 1
+    hour=FLTARR(npass)+12.0
+
+  ENDELSE
 
   ; mixrat0[a,p] = (a + 1 + p/10) * 1e-6, built by outer sum.
   mixrat0=((REBIN(a,nlev,npass)+1.0)+REBIN(TRANSPOSE(p),nlev,npass)/10.0)*1.0e-6

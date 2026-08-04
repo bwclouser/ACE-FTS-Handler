@@ -1909,33 +1909,24 @@ END
 ;   Written by: Ben Clouser, 3/3/21
 ;-
 
-PRO ACEData::reduceBlock,i,j,k,l
+PRO ACEData::reduceBlock,i,j,k,l,c
 
   COMPILE_OPT IDL2
 
-  npass=(*self.hmz).npass
   nlev=N_ELEMENTS((*self.hmz).alt)
 
-  goodOrbs=((*self.flags).sflag AND (*self.flags).tflag AND (*self.flags).eflag)
-  startOrbs=where(goodOrbs eq 1,nStart)
-
-  ;----- If nothing survives the global flags, WHERE returns -1 and every slice
-  ; below would silently read the last occultation instead. Mark the block empty
-  ; and bail out. -------;
-  IF nStart EQ 0 THEN BEGIN
+  ;----- Nothing survived the global flags, so no block has any data. -------;
+  IF c.nStart EQ 0 THEN BEGIN
     self.emptyBlock,i,j,k,l
     RETURN
   ENDIF
 
-  tempAFlags=(*self.flags).aflag[*,startOrbs]
-  tempOpMask=(*self.opMask)[*,startOrbs]
-
-  fFlag=((*self.flags).aflag[*,startOrbs] AND (*self.opMask)[*,startOrbs])
+  fFlag=(c.aflag AND (*self.opMask)[*,c.startOrbs])
 
   kGood=where(fFlag eq 1,ndat)
 
-  ;----- Same again for the points inside this particular bin. Note that the old
-  ; ndat=n_elements(kGood) reported 1 for an empty bin, not 0. -------;
+  ;----- Note that the old ndat=n_elements(kGood) reported 1 for an empty bin,
+  ; not 0. -------;
   IF ndat EQ 0 THEN BEGIN
     self.emptyBlock,i,j,k,l
     RETURN
@@ -1943,22 +1934,11 @@ PRO ACEData::reduceBlock,i,j,k,l
 
   finOrbs=kGood/nlev
 
-  ;print,n_elements(startOrbs)
-  ;print,n_elements(goodOrbs)
-  ;print,finOrbs
-  
-  ;stop
-  
-  mr0=(*self.hmz).mixrat0[*,startOrbs]
-  mr0g=mr0[kGood]
-  temp=(*self.hmz).temp[*,startOrbs]
-  tempg=temp[kGood]
-  pres=(*self.hmz).pres[*,startOrbs]
-  presg=pres[kGood]
-  pt=(*self.hmz).pt[*,startOrbs]
-  ptg=pt[kGood]
-  tdmp=(*self.hmz).t_dmp[*,startOrbs]
-  tdmpg=tdmp[kGood]
+  mr0g=c.mr0[kGood]
+  tempg=c.temp[kGood]
+  presg=c.pres[kGood]
+  ptg=c.pt[kGood]
+  tdmpg=c.tdmp[kGood]
   (*self.blocks)[i,j,k,l].mean0=mean(mr0g)
   (*self.blocks)[i,j,k,l].meant=mean(tempg)
   (*self.blocks)[i,j,k,l].meanp=mean(presg)
@@ -1980,8 +1960,8 @@ PRO ACEData::reduceBlock,i,j,k,l
     (*self.blocks)[i,j,k,l].sdt_dmp=!VALUES.F_NAN
   ENDELSE
 
-  (*self.blocks)[i,j,k,l].meanLat=mean((*self.hmz).lat[startOrbs[finOrbs]])
-  (*self.blocks)[i,j,k,l].meanLon=mean((*self.hmz).lon[startOrbs[finOrbs]])
+  (*self.blocks)[i,j,k,l].meanLat=mean(c.lat[finOrbs])
+  (*self.blocks)[i,j,k,l].meanLon=mean(c.lon[finOrbs])
   (*self.blocks)[i,j,k,l].nPts=ndat
   ;stop
   if ndat ge 5 then begin
@@ -1992,10 +1972,8 @@ PRO ACEData::reduceBlock,i,j,k,l
     IF self.params.isDMP THEN (*self.blocks)[i,j,k,l].bwt_dmp=createboxplotdata(tdmpg)
   endif
   if (*self.hmz).nmols gt 1 then begin
-    mr1=(*self.hmz).mixrat1[*,startOrbs]
-    mr1g=mr1[kGood]
-    rat0=(*self.hmz).ratio[*,startOrbs]
-    rat0g=rat0[kGood]
+    mr1g=c.mr1[kGood]
+    rat0g=c.rat[kGood]
     (*self.blocks)[i,j,k,l].mean1=mean(mr1g)
     (*self.blocks)[i,j,k,l].meanRat=mean(rat0g)
 
@@ -2014,8 +1992,63 @@ PRO ACEData::reduceBlock,i,j,k,l
   endif
   ;stop
   ;(*(*self.blocks)[i,j,k,l].orbIDs)=(*self.hmz).orbit[startOrbs[finOrbs]]
-  (*(*self.blocks)[i,j,k,l].orbIDs)=startOrbs[finOrbs]
-  
+  (*(*self.blocks)[i,j,k,l].orbIDs)=c.startOrbs[finOrbs]
+
+END
+
+;+
+; =============================================================
+;
+; METHODNAME:
+;       ACEData::reduceCache
+;
+; PURPOSE:
+;       The ACEData::reduceCache function method is a private method and is not
+;       intended to be called directly. It returns the structure of quantities
+;       that ACEData::reduceBlock needs but that do not vary from block to
+;       block, so that calcBlocks can compute them once per pass instead of
+;       once per bin.
+;
+;       The global flags do not depend on the bin, and neither do the slices of
+;       the harmonized arrays taken at the occultations those flags admit.
+;       reduceBlock used to rebuild all of them on every call, which meant
+;       copying five or seven full-size arrays per bin: for a 595-bin grid over
+;       4000 occultations that is several gigabytes of memcpy to produce a few
+;       hundred numbers.
+;
+;       Only the operational mask genuinely varies per bin, and that is still
+;       read from self.opMask inside reduceBlock.
+;
+; MODIFICATION HISTORY:
+;   Written by: Ben Clouser, 8/4/25
+;-
+
+FUNCTION ACEData::reduceCache
+
+  COMPILE_OPT IDL2
+
+  goodOrbs=((*self.flags).sflag AND (*self.flags).tflag AND (*self.flags).eflag)
+  startOrbs=WHERE(goodOrbs EQ 1,nStart)
+
+  IF nStart EQ 0 THEN RETURN,{nStart:0L}
+
+  c={nStart:nStart,startOrbs:startOrbs, $
+     aflag:(*self.flags).aflag[*,startOrbs], $
+     mr0:(*self.hmz).mixrat0[*,startOrbs], $
+     temp:(*self.hmz).temp[*,startOrbs], $
+     pres:(*self.hmz).pres[*,startOrbs], $
+     pt:(*self.hmz).pt[*,startOrbs], $
+     tdmp:(*self.hmz).t_dmp[*,startOrbs], $
+     lat:(*self.hmz).lat[startOrbs], $
+     lon:(*self.hmz).lon[startOrbs]}
+
+  IF (*self.hmz).nmols GT 1 THEN BEGIN
+    c=CREATE_STRUCT(c,'mr1',(*self.hmz).mixrat1[*,startOrbs], $
+                       'rat',(*self.hmz).ratio[*,startOrbs])
+  ENDIF
+
+  RETURN,c
+
 END
 
 ;+
@@ -2067,13 +2100,26 @@ PRO ACEData::calcBlocks,useParam=useParam
 
   daysInMonth=[31,28,31,30,31,30,31,31,30,31,30,31]
 
-  IF self.params.sMod EQ 1 OR self.params.tMod EQ 1 OR self.params.eMod EQ 1 OR self.params.bMod EQ 1 THEN BEGIN
+  ;----- Recompute the flags when a parameter changed, and also when they have
+  ; never been computed at all, which reduceCache below depends on. -------;
+  flagsStale=(self.params.sMod EQ 1 OR self.params.tMod EQ 1 OR $
+              self.params.eMod EQ 1 OR self.params.bMod EQ 1)
+  IF ~PTR_VALID(self.flags) THEN BEGIN
+    flagsStale=1B
+  ENDIF ELSE IF N_ELEMENTS(*self.flags) EQ 0 THEN BEGIN
+    flagsStale=1B
+  ENDIF
+
+  IF flagsStale THEN BEGIN
     print,'Parameters have Changed, resetting blocks'
     self.setSpaceFlag
     self.setTimeFlag
     self.setErrorFlag
     self.resetBlocks
   ENDIF
+
+  ;----- Built once for the whole pass. See ACEData::reduceCache. -------;
+  rc=self.reduceCache()
 
   latsran=(self.params.latlims[1]-self.params.latlims[0])/self.params.nlats*dindgen(self.params.nlats+1)+self.params.latlims[0]
   longsran=(self.params.lonlims[1]-self.params.lonlims[0])/self.params.nlons*dindgen(self.params.nlons+1)+self.params.lonlims[0]
@@ -2095,7 +2141,7 @@ PRO ACEData::calcBlocks,useParam=useParam
             latlims=latsran[i:i+1]
             ;stop
             self.setOpMask,latlims,lonlims,alims,jdays=jlims
-            self.reduceBlock,i,j,k,l
+            self.reduceBlock,i,j,k,l,rc
             (*self.blocks)[i,j,k,l].yearlims=[-1,-1]
             (*self.blocks)[i,j,k,l].monthlims=[-1,-1]
             (*self.blocks)[i,j,k,l].daylims=[-1,-1]
@@ -2124,7 +2170,6 @@ PRO ACEData::calcBlocks,useParam=useParam
       mlims=[timesran[l,1],timesran[l+1,1]]
       dlims=[timesran[l,2],timesran[l+1,2]]
       hlims=[timesran[l,3],timesran[l+1,3]]
-        print,ylims,mlims,dlims,hlims
       for k=0,self.params.nAlts-1 do begin
         alims=altsran[k:k+1]
         ;stop
@@ -2133,7 +2178,7 @@ PRO ACEData::calcBlocks,useParam=useParam
           for i=0,self.params.nLats-1 do begin
             latlims=latsran[i:i+1]
             self.setOpMask,latlims,lonlims,alims,byears=ylims,bmonths=mlims,bdays=dlims,bhours=hlims
-            self.reduceBlock,i,j,k,l
+            self.reduceBlock,i,j,k,l,rc
             (*self.blocks)[i,j,k,l].yearlims=ylims
             (*self.blocks)[i,j,k,l].monthlims=mlims            
             (*self.blocks)[i,j,k,l].daylims=dlims
