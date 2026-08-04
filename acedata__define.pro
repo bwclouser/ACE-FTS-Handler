@@ -1635,6 +1635,12 @@ PRO ACEData::setOpMask,blats,blons,balts,jdays=jdays,byears=byears,bmonths=bmont
 
   COMPILE_OPT IDL2
 
+  ;----- No longer used. Block selection moved to ACEData::blockPasses plus the
+  ; altitude level ranges precomputed in calcBlocks, which do the same job
+  ; without materialising a full nlev x npass mask per block. The body below is
+  ; left for reference. -------;
+  MESSAGE,'ACEData::setOpMask is no longer used. See ACEData::blockPasses.'
+
   self.isOpMaskDefined
   
 ;  yearInds=indgen(byears[1]-byears[0]+1)+byears[0]
@@ -1909,11 +1915,9 @@ END
 ;   Written by: Ben Clouser, 3/3/21
 ;-
 
-PRO ACEData::reduceBlock,i,j,k,l,c
+PRO ACEData::reduceBlock,i,j,k,l,c,passIdx,levLo,levHi
 
   COMPILE_OPT IDL2
-
-  nlev=N_ELEMENTS((*self.hmz).alt)
 
   ;----- Nothing survived the global flags, so no block has any data. -------;
   IF c.nStart EQ 0 THEN BEGIN
@@ -1921,9 +1925,21 @@ PRO ACEData::reduceBlock,i,j,k,l,c
     RETURN
   ENDIF
 
-  fFlag=(c.aflag AND (*self.opMask)[*,c.startOrbs])
+  ;----- No occultations in this lat/lon/time cell, or no levels in this
+  ; altitude bin. -------;
+  nSel=N_ELEMENTS(passIdx)
+  IF nSel EQ 0 || levLo LT 0 THEN BEGIN
+    self.emptyBlock,i,j,k,l
+    RETURN
+  ENDIF
 
-  kGood=where(fFlag eq 1,ndat)
+  ;----- Work on the block's own sub-rectangle. This used to AND a full
+  ; nlev x npass operational mask and run WHERE over the result, once per
+  ; block, to find at most a few hundred points. -------;
+  nSubLev=levHi-levLo+1
+
+  subFlag=c.aflag[levLo:levHi,passIdx]
+  kGood=where(subFlag eq 1,ndat)
 
   ;----- Note that the old ndat=n_elements(kGood) reported 1 for an empty bin,
   ; not 0. -------;
@@ -1932,13 +1948,16 @@ PRO ACEData::reduceBlock,i,j,k,l,c
     RETURN
   ENDIF
 
-  finOrbs=kGood/nlev
+  ;----- kGood indexes the sub-rectangle, whose first dimension is level, so
+  ; the quotient gives the position within passIdx. -------;
+  finOrbs=kGood/nSubLev
+  selOrbs=passIdx[finOrbs]
 
-  mr0g=c.mr0[kGood]
-  tempg=c.temp[kGood]
-  presg=c.pres[kGood]
-  ptg=c.pt[kGood]
-  tdmpg=c.tdmp[kGood]
+  mr0g=(c.mr0[levLo:levHi,passIdx])[kGood]
+  tempg=(c.temp[levLo:levHi,passIdx])[kGood]
+  presg=(c.pres[levLo:levHi,passIdx])[kGood]
+  ptg=(c.pt[levLo:levHi,passIdx])[kGood]
+  tdmpg=(c.tdmp[levLo:levHi,passIdx])[kGood]
   (*self.blocks)[i,j,k,l].mean0=mean(mr0g)
   (*self.blocks)[i,j,k,l].meant=mean(tempg)
   (*self.blocks)[i,j,k,l].meanp=mean(presg)
@@ -1960,8 +1979,8 @@ PRO ACEData::reduceBlock,i,j,k,l,c
     (*self.blocks)[i,j,k,l].sdt_dmp=!VALUES.F_NAN
   ENDELSE
 
-  (*self.blocks)[i,j,k,l].meanLat=mean(c.lat[finOrbs])
-  (*self.blocks)[i,j,k,l].meanLon=mean(c.lon[finOrbs])
+  (*self.blocks)[i,j,k,l].meanLat=mean(c.lat[selOrbs])
+  (*self.blocks)[i,j,k,l].meanLon=mean(c.lon[selOrbs])
   (*self.blocks)[i,j,k,l].nPts=ndat
   ;stop
   if ndat ge 5 then begin
@@ -1972,8 +1991,8 @@ PRO ACEData::reduceBlock,i,j,k,l,c
     IF self.params.isDMP THEN (*self.blocks)[i,j,k,l].bwt_dmp=createboxplotdata(tdmpg)
   endif
   if (*self.hmz).nmols gt 1 then begin
-    mr1g=c.mr1[kGood]
-    rat0g=c.rat[kGood]
+    mr1g=(c.mr1[levLo:levHi,passIdx])[kGood]
+    rat0g=(c.rat[levLo:levHi,passIdx])[kGood]
     (*self.blocks)[i,j,k,l].mean1=mean(mr1g)
     (*self.blocks)[i,j,k,l].meanRat=mean(rat0g)
 
@@ -1992,7 +2011,66 @@ PRO ACEData::reduceBlock,i,j,k,l,c
   endif
   ;stop
   ;(*(*self.blocks)[i,j,k,l].orbIDs)=(*self.hmz).orbit[startOrbs[finOrbs]]
-  (*(*self.blocks)[i,j,k,l].orbIDs)=c.startOrbs[finOrbs]
+  (*(*self.blocks)[i,j,k,l].orbIDs)=c.startOrbs[selOrbs]
+
+END
+
+;+
+; =============================================================
+;
+; METHODNAME:
+;       ACEData::blockPasses
+;
+; PURPOSE:
+;       The ACEData::blockPasses function method is a private method and is not
+;       intended to be called directly. It returns the positions, in the space
+;       of the ACEData::reduceCache arrays, of the occultations that fall inside
+;       one lat/lon/time cell.
+;
+;       Together with reduceCache this replaces the operational mask. The old
+;       arrangement kept a full nlev x npass byte mask, rewrote all of it for
+;       every block in setOpMask, then ANDed a full-size slice of it against the
+;       altitude flags and ran WHERE over the result inside reduceBlock, all to
+;       locate at most a few hundred points.
+;
+;       Block membership factorises instead: latitude, longitude and time select
+;       occultations, which is one dimension, and altitude selects a contiguous
+;       run of levels, because the retrieval grid is monotonic. So a block is a
+;       sub-rectangle, and reduceBlock only has to touch that.
+;
+;       Latitude and longitude do not depend on the altitude bin, so calcBlocks
+;       calls this once per lat/lon/time cell and reuses the result down the
+;       whole altitude column.
+;
+; MODIFICATION HISTORY:
+;   Written by: Ben Clouser, 8/4/25
+;-
+
+FUNCTION ACEData::blockPasses,c,blats,blons,jdays=jdays
+
+  COMPILE_OPT IDL2
+
+  IF c.nStart EQ 0 THEN RETURN,!NULL
+
+  ;----- Bounds are inclusive at both ends, which is what the operational mask
+  ; did, so an occultation sitting exactly on an interior bin edge belongs to
+  ; both neighbouring bins. That is preserved deliberately. HISTOGRAM-based
+  ; binning would be marginally faster but assigns each occultation to exactly
+  ; one bin, which would quietly move numbers in existing analyses. -------;
+  IF N_ELEMENTS(jdays) EQ 2 THEN BEGIN
+    ksel=WHERE(c.jul GE jdays[0] AND c.jul LE jdays[1] AND $
+               c.lat GE blats[0] AND c.lat LE blats[1] AND $
+               c.lon GE blons[0] AND c.lon LE blons[1],nsel)
+  ENDIF ELSE BEGIN
+    ;----- The global time flag is already folded into the cache, which is what
+    ; the old non-solidBlock branch of setOpMask re-applied here. -------;
+    ksel=WHERE(c.lat GE blats[0] AND c.lat LE blats[1] AND $
+               c.lon GE blons[0] AND c.lon LE blons[1],nsel)
+  ENDELSE
+
+  IF nsel EQ 0 THEN RETURN,!NULL
+
+  RETURN,ksel
 
 END
 
@@ -2004,20 +2082,16 @@ END
 ;
 ; PURPOSE:
 ;       The ACEData::reduceCache function method is a private method and is not
-;       intended to be called directly. It returns the structure of quantities
-;       that ACEData::reduceBlock needs but that do not vary from block to
-;       block, so that calcBlocks can compute them once per pass instead of
-;       once per bin.
+;       intended to be called directly. It returns the quantities reduceBlock
+;       needs that do not vary from block to block, so calcBlocks can compute
+;       them once per pass rather than once per bin.
 ;
-;       The global flags do not depend on the bin, and neither do the slices of
-;       the harmonized arrays taken at the occultations those flags admit.
-;       reduceBlock used to rebuild all of them on every call, which meant
-;       copying five or seven full-size arrays per bin: for a 595-bin grid over
-;       4000 occultations that is several gigabytes of memcpy to produce a few
-;       hundred numbers.
+;       That is the global flag intersection, and the slices of the harmonized
+;       arrays taken at the occultations those flags admit. reduceBlock used to
+;       rebuild all of them on every call, which meant copying five or seven
+;       full-size arrays per bin.
 ;
-;       Only the operational mask genuinely varies per bin, and that is still
-;       read from self.opMask inside reduceBlock.
+;       See the header above ACEData::blockPasses for how a block is selected.
 ;
 ; MODIFICATION HISTORY:
 ;   Written by: Ben Clouser, 8/4/25
@@ -2040,7 +2114,8 @@ FUNCTION ACEData::reduceCache
      pt:(*self.hmz).pt[*,startOrbs], $
      tdmp:(*self.hmz).t_dmp[*,startOrbs], $
      lat:(*self.hmz).lat[startOrbs], $
-     lon:(*self.hmz).lon[startOrbs]}
+     lon:(*self.hmz).lon[startOrbs], $
+     jul:(*self.hmz).juldays[startOrbs]}
 
   IF (*self.hmz).nmols GT 1 THEN BEGIN
     c=CREATE_STRUCT(c,'mr1',(*self.hmz).mixrat1[*,startOrbs], $
@@ -2128,20 +2203,54 @@ PRO ACEData::calcBlocks,useParam=useParam
   dayLast=julday(self.params.monthlims[1],self.params.daylims[1],self.params.yearlims[1],self.params.hourlims[1],0,0)
   dayFirst=julday(self.params.monthlims[0],self.params.daylims[0],self.params.yearlims[0],self.params.hourlims[0],0,0)
   daysran=(dayLast-dayFirst)/self.params.nTimes*dindgen(self.params.nTimes+1)+dayFirst
+
+  ;----- Each altitude bin maps to a contiguous run of retrieval levels, which
+  ; relies on the altitude grid being monotonic. Say so rather than mis-slicing
+  ; silently if that ever stops holding. -------;
+  alt=(*self.hmz).alt
+  nlev=N_ELEMENTS(alt)
+  altMin=MIN(alt)
+  altMax=MAX(alt)
+  IF nlev GT 1 THEN BEGIN
+    IF TOTAL(alt[1:*] LE alt[0:nlev-2]) GT 0 THEN $
+      PRINT,'WARNING: ALTITUDE GRID IS NOT MONOTONIC; BLOCK LEVEL RANGES MAY BE WRONG'
+  ENDIF
+
+  levLo=LONARR(self.params.nAlts)
+  levHi=LONARR(self.params.nAlts)
+  FOR ka=0,self.params.nAlts-1 DO BEGIN
+    alims=altsran[ka:ka+1]
+    ;----- Reproduces the old setOpMask altitude cut exactly, including that it
+    ; applied no cut at all when the bin spanned the whole grid. -------;
+    IF alims[0] GT altMin OR alims[1] LT altMax THEN BEGIN
+      jlev=WHERE(alt GT alims[0] AND alt LT alims[1],nlevsel)
+    ENDIF ELSE BEGIN
+      jlev=LINDGEN(nlev)
+      nlevsel=nlev
+    ENDELSE
+    IF nlevsel GT 0 THEN BEGIN
+      levLo[ka]=jlev[0]
+      levHi[ka]=jlev[nlevsel-1]
+    ENDIF ELSE BEGIN
+      levLo[ka]=-1
+      levHi[ka]=-1
+    ENDELSE
+  ENDFOR
+
   ;stop
   IF self.params.solidBlock EQ 1 THEN BEGIN
+    ;----- Altitude is the innermost loop so that one pass selection is shared
+    ; by the whole altitude column above a lat/lon/time cell. -------;
     for l=0,self.params.nTimes-1 do begin
       jlims=daysran[l:l+1]
-      for k=0,self.params.nAlts-1 do begin
-        alims=altsran[k:k+1]
-        ;stop
-        for j=0,self.params.nLons-1 do begin
-          lonlims=longsran[j:j+1]
-          for i=0,self.params.nLats-1 do begin
-            latlims=latsran[i:i+1]
-            ;stop
-            self.setOpMask,latlims,lonlims,alims,jdays=jlims
-            self.reduceBlock,i,j,k,l,rc
+      for j=0,self.params.nLons-1 do begin
+        lonlims=longsran[j:j+1]
+        for i=0,self.params.nLats-1 do begin
+          latlims=latsran[i:i+1]
+          passIdx=self.blockPasses(rc,latlims,lonlims,jdays=jlims)
+          for k=0,self.params.nAlts-1 do begin
+            alims=altsran[k:k+1]
+            self.reduceBlock,i,j,k,l,rc,passIdx,levLo[k],levHi[k]
             (*self.blocks)[i,j,k,l].yearlims=[-1,-1]
             (*self.blocks)[i,j,k,l].monthlims=[-1,-1]
             (*self.blocks)[i,j,k,l].daylims=[-1,-1]
@@ -2150,7 +2259,6 @@ PRO ACEData::calcBlocks,useParam=useParam
             (*self.blocks)[i,j,k,l].latlims=latlims
             (*self.blocks)[i,j,k,l].lonlims=lonlims
             (*self.blocks)[i,j,k,l].altlims=alims
-            ;stop
 
           endfor
         endfor
@@ -2165,22 +2273,26 @@ PRO ACEData::calcBlocks,useParam=useParam
     timesran[0,2]=days
     timesran[0,3]=hours
     ;stop
+    ;----- The per-bin year/month/day/hour limits below are recorded on each
+    ; block but do not reach the selection: as in the previous implementation,
+    ; the global time flag is what restricts occultations in this branch, so
+    ; every time bin sees the same set. That is the known nTimes > 1 defect and
+    ; is unchanged here. -------;
     for l=0,self.params.nTimes-1 do begin
       ylims=[timesran[l,0],timesran[l+1,0]]
       mlims=[timesran[l,1],timesran[l+1,1]]
       dlims=[timesran[l,2],timesran[l+1,2]]
       hlims=[timesran[l,3],timesran[l+1,3]]
-      for k=0,self.params.nAlts-1 do begin
-        alims=altsran[k:k+1]
-        ;stop
-        for j=0,self.params.nLons-1 do begin
-          lonlims=longsran[j:j+1]
-          for i=0,self.params.nLats-1 do begin
-            latlims=latsran[i:i+1]
-            self.setOpMask,latlims,lonlims,alims,byears=ylims,bmonths=mlims,bdays=dlims,bhours=hlims
-            self.reduceBlock,i,j,k,l,rc
+      for j=0,self.params.nLons-1 do begin
+        lonlims=longsran[j:j+1]
+        for i=0,self.params.nLats-1 do begin
+          latlims=latsran[i:i+1]
+          passIdx=self.blockPasses(rc,latlims,lonlims)
+          for k=0,self.params.nAlts-1 do begin
+            alims=altsran[k:k+1]
+            self.reduceBlock,i,j,k,l,rc,passIdx,levLo[k],levHi[k]
             (*self.blocks)[i,j,k,l].yearlims=ylims
-            (*self.blocks)[i,j,k,l].monthlims=mlims            
+            (*self.blocks)[i,j,k,l].monthlims=mlims
             (*self.blocks)[i,j,k,l].daylims=dlims
             (*self.blocks)[i,j,k,l].hourlims=hlims
             (*self.blocks)[i,j,k,l].jullims=[-1,-1]
@@ -2188,8 +2300,8 @@ PRO ACEData::calcBlocks,useParam=useParam
             (*self.blocks)[i,j,k,l].lonlims=lonlims
             (*self.blocks)[i,j,k,l].altlims=alims
             ;stop
-  
-          endfor      
+
+          endfor
         endfor
       endfor
     endfor
