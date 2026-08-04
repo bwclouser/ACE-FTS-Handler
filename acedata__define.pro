@@ -139,6 +139,8 @@
 
 FUNCTION ACEData::Init
 
+  COMPILE_OPT IDL2
+
   self.raw=PTR_NEW(/ALLOCATE)
   self.hmz=PTR_NEW(/ALLOCATE)
   self.dmp=PTR_NEW(/ALLOCATE)
@@ -182,15 +184,18 @@ END
 
 PRO ACEData::Cleanup
 
-  PTR_FREE,self.raw
-  PTR_FREE,self.hmz
+  COMPILE_OPT IDL2
+
+  IF PTR_VALID(self.raw) THEN PTR_FREE,self.raw
+  IF PTR_VALID(self.hmz) THEN PTR_FREE,self.hmz
   IF PTR_VALID(self.flags) THEN PTR_FREE,self.flags
   IF PTR_VALID(self.opMask) THEN PTR_FREE,self.opMask
-  IF PTR_VALID(self.blocks) THEN BEGIN    
-    IF PTR_VALID((*self.blocks)[0].orbIDs) THEN PTR_FREE,(*self.blocks).orbIDs
+  IF PTR_VALID(self.blocks) THEN BEGIN
+    ;----- N_ELEMENTS rather than subscripting [0], which errors when the heap
+    ; variable was allocated but never assigned. -------;
+    IF N_ELEMENTS(*self.blocks) GT 0 THEN PTR_FREE,(*self.blocks).orbIDs
     PTR_FREE,self.blocks
   ENDIF
-  IF PTR_VALID(self.blocks) THEN PTR_FREE,self.blocks
   IF PTR_VALID(self.dmp) THEN PTR_FREE,self.dmp
 
 END
@@ -222,6 +227,8 @@ END
 ;-
 
 PRO ACEData::freeRaw
+
+  COMPILE_OPT IDL2
 
   IF self.raw ne !null then begin
     PTR_FREE,self.raw
@@ -277,6 +284,11 @@ END
 
 PRO ACEData::loadFiles,fnames,version=version,primeMerid=primeMerid
 
+  COMPILE_OPT IDL2
+
+  ;----- The VMR for the molecule sits at a fixed variable index in the ACE-FTS
+  ; L2 files, with its uncertainty at the following index. That index moved
+  ; between data versions, which is what the version keyword selects. -------;
   IF KEYWORD_SET(version) THEN BEGIN
     CASE version OF
       'p1p2': molnameid=11
@@ -286,102 +298,93 @@ PRO ACEData::loadFiles,fnames,version=version,primeMerid=primeMerid
     molnameid=10
   ENDELSE
 
-  n_files=size(fnames,/n_elements)
-  mollist=list()
-  
-  for i=0,n_files-1 do begin
+  n_files=N_ELEMENTS(fnames)
+  mollist=LIST()
 
-    ;get file id
-    id='id'+string(i,format='(I02)')
-    cmd='id=ncdf_open(fnames[i])'
-    res=execute(cmd)
+  FOR i=0,n_files-1 DO BEGIN
 
-    ;get molecule name
-    cmd0='mol=ncdf_varinq(id,molnameid)'
-    res=execute(cmd0)
-
-    ;get altitude
-    cmd0='altid=ncdf_varid(id,"altitude")'
-    cmd1='ncdf_varget,id,altid,alt'
-    res=execute(cmd0+' & '+cmd1)
-
-    ;get sunrise/sunset
-    cmd0='srssid=ncdf_varid(id,"sunset_sunrise")'
-    cmd1='ncdf_varget,id,srssid,srss'+mol.name
-    res=execute(cmd0+' & '+cmd1)
-
-    ;get year
-    cmd0='yearid=ncdf_varid(id,"year")'
-    cmd1='ncdf_varget,id,yearid,year'+mol.name
-    res=execute(cmd0+' & '+cmd1)
-
-    ;get month
-    cmd0='monid=ncdf_varid(id,"month")'
-    cmd1='ncdf_varget,id,monid,month'+mol.name
-    res=execute(cmd0+' & '+cmd1)
-
-    ;get day
-    cmd0='dayid=ncdf_varid(id,"day")'
-    cmd1='ncdf_varget,id,dayid,day'+mol.name
-    res=execute(cmd0+' & '+cmd1)
-
-    ;get hour
-    cmd0='hourid=ncdf_varid(id,"hour")'
-    cmd1='ncdf_varget,id,hourid,hour'+mol.name
-    res=execute(cmd0+' & '+cmd1)
-
-    ;get latitude
-    cmd0='latid=ncdf_varid(id,"latitude")'
-    cmd1='ncdf_varget,id,latid,lat'+mol.name
-    res=execute(cmd0+' & '+cmd1)
-
-    ;get longitude
-    cmd0='lonid=ncdf_varid(id,"longitude")'
-    cmd1='ncdf_varget,id,lonid,lon'+mol.name
-    IF KEYWORD_SET(primeMerid) THEN BEGIN
-      cmd1+=' & jneg=WHERE(lon'+mol.name+' LT 0,nneg)'
-      cmd1+=' & IF nneg GT 0 THEN lon'+mol.name+'[jneg]+=360'
+    IF ~FILE_TEST(fnames[i],/READ) THEN BEGIN
+      PRINT,'ERROR: CANNOT READ FILE: '+fnames[i]
+      CONTINUE
     ENDIF
-    res=execute(cmd0+' & '+cmd1)
 
-    cmd1='ncdf_varget,id,molnameid,'+mol.name
-    res=execute(cmd1)
+    id=NCDF_OPEN(fnames[i])
 
-    ;get orbit id
-    cmd0='orbid=ncdf_varid(id,"orbit")'
-    cmd1='ncdf_varget,id,orbid,orbit_'+mol.name
-    res=execute(cmd0+' & '+cmd1)
+    ;----- Release the file handle even if a variable turns out to be missing,
+    ; then let the error propagate. -------;
+    CATCH,ncerr
+    IF ncerr NE 0 THEN BEGIN
+      CATCH,/CANCEL
+      NCDF_CLOSE,id
+      MESSAGE,/REISSUE_LAST
+    ENDIF
 
-    ;get temperature
-    cmd0='tempid=ncdf_varid(id,"temperature")'
-    cmd1='ncdf_varget,id,tempid,temp_'+mol.name
-    res=execute(cmd0+' & '+cmd1)
+    mol=NCDF_VARINQ(id,molnameid)
 
-    ;get temperature fits
-    cmd0='tempfitid=ncdf_varid(id,"temperature_fit")'
-    cmd1='ncdf_varget,id,tempfitid,tempfit_'+mol.name
-    res=execute(cmd0+' & '+cmd1)
+    alt=self.ncGet(id,'altitude')
+    srss=self.ncGet(id,'sunset_sunrise')
+    year=self.ncGet(id,'year')
+    month=self.ncGet(id,'month')
+    day=self.ncGet(id,'day')
+    hour=self.ncGet(id,'hour')
+    lat=self.ncGet(id,'latitude')
+    lon=self.ncGet(id,'longitude')
+    orbit=self.ncGet(id,'orbit')
+    temp=self.ncGet(id,'temperature')
+    tempfit=self.ncGet(id,'temperature_fit')
+    pres=self.ncGet(id,'pressure')
 
-    ;get pressure
-    cmd0='presid=ncdf_varid(id,"pressure")'
-    cmd1='ncdf_varget,id,presid,pres_'+mol.name
-    res=execute(cmd0+' & '+cmd1)
+    NCDF_VARGET,id,molnameid,mixrat
+    NCDF_VARGET,id,molnameid+1,mixrat_err
 
-    ;get error for molecule
-    cmd0='mol_err=ncdf_varinq(id,molnameid+1)'
-    res=execute(cmd0)
+    CATCH,/CANCEL
+    NCDF_CLOSE,id
 
-    cmd1='ncdf_varget,id,molnameid+1,'+mol_err.name
-    res=execute(cmd1)
+    IF KEYWORD_SET(primeMerid) THEN BEGIN
+      jneg=WHERE(lon LT 0,nneg)
+      IF nneg GT 0 THEN lon[jneg]+=360
+    ENDIF
 
-    cmd0='npass_'+mol.name+'=n_elements(lon'+mol.name+')'
-    cmd1=mol.name+'_str={name:"'+mol.name+'",npass:npass_'+mol.name+',alt:alt,srss:srss'+mol.name+',orbit:orbit_'+mol.name+',year:year'+mol.name+',month:month'+mol.name+',day:day'+mol.name+',hour:hour'+mol.name+',lat:lat'+mol.name+',lon:lon'+mol.name+',mixrat:'+mol.name+',mixrat_err:'+mol.name+'_error,temp:temp_'+mol.name+',pres:pres_'+mol.name+'}'
-    cmd2='mollist.add,'+mol.name+'_str'
-    res=execute(cmd0+' & '+cmd1+' & '+cmd2)
-    
-  endfor
-  
+    mollist.add,{name:mol.name,npass:N_ELEMENTS(lon),alt:alt,srss:srss, $
+                 orbit:orbit,year:year,month:month,day:day,hour:hour, $
+                 lat:lat,lon:lon,mixrat:mixrat,mixrat_err:mixrat_err, $
+                 temp:temp,tempfit:tempfit,pres:pres}
+
+  ENDFOR
+
+  IF mollist.count() EQ 0 THEN BEGIN
+    PRINT,'ERROR: NO FILES LOADED'
+    RETURN
+  ENDIF
+
   (*self.raw)=mollist
+
+END
+
+;+
+; =============================================================
+;
+; METHODNAME:
+;       ACEData::ncGet
+;
+; PURPOSE:
+;       The ACEData::ncGet function method is a private method and is not
+;       intended to be called directly. It reads a NetCDF variable by name and
+;       reports the name in the error message if the variable is absent, which
+;       NCDF_VARGET on an id of -1 does not do.
+;
+; MODIFICATION HISTORY:
+;   Written by: Ben Clouser, 8/4/25
+;-
+
+FUNCTION ACEData::ncGet,id,vname
+
+  COMPILE_OPT IDL2
+
+  vid=NCDF_VARID(id,vname)
+  IF vid EQ -1 THEN MESSAGE,'Variable not found in file: '+vname
+  NCDF_VARGET,id,vid,data
+  RETURN,data
 
 END
 
@@ -414,115 +417,73 @@ END
 
 PRO ACEData::loadDMP
 
-;get file id
-id=ncdf_open(self.params.dmp_path)
+  COMPILE_OPT IDL2
 
-;get sunrise/sunset
-cmd0='srssid=ncdf_varid(id,"Sunset Sunrise")'
-cmd1='ncdf_varget,id,srssid,srss'
-res=execute(cmd0+' & '+cmd1)
+  IF ~FILE_TEST(self.params.dmp_path,/READ) THEN BEGIN
+    PRINT,'ERROR: CANNOT READ DMP FILE: '+self.params.dmp_path
+    PRINT,'       Set it with setParam,''dmp_path'',<path or version alias>.'
+    RETURN
+  ENDIF
 
-;get orbit id
-cmd0='orbid=ncdf_varid(id,"Orbit")'
-cmd1='ncdf_varget,id,orbid,orbit'
-res=execute(cmd0+' & '+cmd1)
+  id=NCDF_OPEN(self.params.dmp_path)
 
-;get pressure
-cmd0='presid=ncdf_varid(id,"Pressure")'
-cmd1='ncdf_varget,id,presid,pres'
-res=execute(cmd0+' & '+cmd1)
+  CATCH,ncerr
+  IF ncerr NE 0 THEN BEGIN
+    CATCH,/CANCEL
+    NCDF_CLOSE,id
+    MESSAGE,/REISSUE_LAST
+  ENDIF
 
-;get zonal wind
-cmd0='uwindid=ncdf_varid(id,"U")'
-cmd1='ncdf_varget,id,uwindid,uwind
-res=execute(cmd0+' & '+cmd1)
+  srss=self.ncGet(id,'Sunset Sunrise')
+  orbit=self.ncGet(id,'Orbit')
+  alt=self.ncGet(id,'Altitude')
 
-;get meridional wind
-cmd0='vwindid=ncdf_varid(id,"V")'
-cmd1='ncdf_varget,id,vwindid,vwind
-res=execute(cmd0+' & '+cmd1)
+  pres=self.ncGet(id,'Pressure')
+  uwind=self.ncGet(id,'U')
+  vwind=self.ncGet(id,'V')
+  temp=self.ncGet(id,'Temperature')
+  theta=self.ncGet(id,'Theta')
+  gph=self.ncGet(id,'GPH')
+  pv=self.ncGet(id,'PV')
+  spv=self.ncGet(id,'sPV')
+  rv=self.ncGet(id,'RV')
+  dtdz=self.ncGet(id,'dT_dZ')
+  ss=self.ncGet(id,'Static_Stability')
+  eql=self.ncGet(id,'EqL')
+  hpvg=self.ncGet(id,'HorsPVgrad')
+  apvg=self.ncGet(id,'avgsPVgrad')
+  tg=self.ncGet(id,'Tgrad')
+  msf=self.ncGet(id,'MSF')
+  o3=self.ncGet(id,'AssimO3')
 
-;get temperature
-cmd0='tempid=ncdf_varid(id,"Temperature")'
-cmd1='ncdf_varget,id,tempid,temp
-res=execute(cmd0+' & '+cmd1)
+  CATCH,/CANCEL
+  NCDF_CLOSE,id
 
-;get potential temperature
-cmd0='thetaid=ncdf_varid(id,"Theta")'
-cmd1='ncdf_varget,id,thetaid,theta
-res=execute(cmd0+' & '+cmd1)
+  ;----- The level count comes from the file rather than being assumed to be
+  ; 75, so a DMP on a different vertical grid does not silently reshape into
+  ; nonsense. -------;
+  n_orbs=N_ELEMENTS(orbit)
+  n_alts=N_ELEMENTS(alt)
 
-;get geopotential height
-cmd0='gphid=ncdf_varid(id,"GPH")'
-cmd1='ncdf_varget,id,gphid,gph
-res=execute(cmd0+' & '+cmd1)
+  IF n_alts*n_orbs NE N_ELEMENTS(pres) THEN BEGIN
+    PRINT,'ERROR: DMP DIMENSIONS INCONSISTENT. '+ $
+          STRTRIM(n_alts,2)+' altitudes x '+STRTRIM(n_orbs,2)+' orbits '+ $
+          'does not match '+STRTRIM(N_ELEMENTS(pres),2)+' pressure values.'
+    RETURN
+  ENDIF
 
-;get altitude
-cmd0='altid=ncdf_varid(id,"Altitude")'
-cmd1='ncdf_varget,id,altid,alt'
-res=execute(cmd0+' & '+cmd1)
+  str={srss:srss,orbit:orbit,alt:alt, $
+       pres:REFORM(pres,n_alts,n_orbs),U:REFORM(uwind,n_alts,n_orbs), $
+       V:REFORM(vwind,n_alts,n_orbs),temp:REFORM(temp,n_alts,n_orbs), $
+       theta:REFORM(theta,n_alts,n_orbs),GPH:REFORM(gph,n_alts,n_orbs), $
+       pv:REFORM(pv,n_alts,n_orbs),spv:REFORM(spv,n_alts,n_orbs), $
+       rv:REFORM(rv,n_alts,n_orbs),dtdz:REFORM(dtdz,n_alts,n_orbs), $
+       ss:REFORM(ss,n_alts,n_orbs),eql:REFORM(eql,n_alts,n_orbs), $
+       hpvg:REFORM(hpvg,n_alts,n_orbs),apvg:REFORM(apvg,n_alts,n_orbs), $
+       tg:REFORM(tg,n_alts,n_orbs),msf:REFORM(msf,n_alts,n_orbs), $
+       o3:REFORM(o3,n_alts,n_orbs)}
 
-;get potential vorticity
-cmd0='pvid=ncdf_varid(id,"PV")'
-cmd1='ncdf_varget,id,pvid,pv'
-res=execute(cmd0+' & '+cmd1)
-
-;get scaled potential vorticity
-cmd0='spvid=ncdf_varid(id,"sPV")'
-cmd1='ncdf_varget,id,spvid,spv'
-res=execute(cmd0+' & '+cmd1)
-
-;get relative vorticity
-cmd0='rvid=ncdf_varid(id,"RV")'
-cmd1='ncdf_varget,id,rvid,rv'
-res=execute(cmd0+' & '+cmd1)
-
-;get lapse rate
-cmd0='dtdzid=ncdf_varid(id,"dT_dZ")'
-cmd1='ncdf_varget,id,dtdzid,dtdz'
-res=execute(cmd0+' & '+cmd1)
-
-;get static stability
-cmd0='ssid=ncdf_varid(id,"Static_Stability")'
-cmd1='ncdf_varget,id,ssid,ss'
-res=execute(cmd0+' & '+cmd1)
-
-;get equivalent latitude
-cmd0='eqlid=ncdf_varid(id,"EqL")'
-cmd1='ncdf_varget,id,eqlid,eql'
-res=execute(cmd0+' & '+cmd1)
-
-;get Normalized Horizontal (Isentropic) sPV Gradient
-cmd0='hpvgid=ncdf_varid(id,"HorsPVgrad")'
-cmd1='ncdf_varget,id,hpvgid,hpvg'
-res=execute(cmd0+' & '+cmd1)
-
-;get Normalizing factor for Horizontal sPV Gradient
-cmd0='apvgid=ncdf_varid(id,"avgsPVgrad")'
-cmd1='ncdf_varget,id,apvgid,apvg'
-res=execute(cmd0+' & '+cmd1)
-
-;get Horizontal (isobaric) Temperature Gradient
-cmd0='tgid=ncdf_varid(id,"Tgrad")'
-cmd1='ncdf_varget,id,tgid,tg'
-res=execute(cmd0+' & '+cmd1)
-
-;get montgomery stream function
-cmd0='msfid=ncdf_varid(id,"MSF")'
-cmd1='ncdf_varget,id,msfid,msf'
-res=execute(cmd0+' & '+cmd1)
-
-;get ozone
-cmd0='o3id=ncdf_varid(id,"AssimO3")'
-cmd1='ncdf_varget,id,o3id,o3'
-res=execute(cmd0+' & '+cmd1)
-
-n_orbs=n_elements(orbit)
-n_alts=75.
-
-str={srss:srss,orbit:orbit,pres:reform(pres,n_alts,n_orbs),U:reform(uwind,n_alts,n_orbs),V:reform(vwind,n_alts,n_orbs),temp:reform(temp,n_alts,n_orbs),theta:reform(theta,n_alts,n_orbs),GPH:reform(GPH,n_alts,n_orbs),alt:alt,pv:reform(pv,n_alts,n_orbs),spv:reform(spv,n_alts,n_orbs),rv:reform(rv,n_alts,n_orbs),dtdz:reform(dtdz,n_alts,n_orbs),ss:reform(ss,n_alts,n_orbs),eql:reform(eql,n_alts,n_orbs),hpvg:reform(hpvg,n_alts,n_orbs),apvg:reform(apvg,n_alts,n_orbs),tg:reform(tg,n_alts,n_orbs),msf:reform(msf,n_alts,n_orbs),o3:reform(o3,n_alts,n_orbs)}
-
-(*self.DMP)=str
+  (*self.DMP)=str
 
 END
 
@@ -581,6 +542,19 @@ END
 ;-
 
 PRO ACEData::harmonize,elements,addDMP=addDMP
+
+  COMPILE_OPT IDL2
+
+IF ~PTR_VALID(self.raw) || N_ELEMENTS(*self.raw) EQ 0 THEN BEGIN
+  PRINT,'ERROR: NO RAW DATA. Call loadFiles first.'
+  RETURN
+ENDIF
+
+nRaw=(*self.raw).count()
+IF MIN(elements) LT 0 OR MAX(elements) GE nRaw THEN BEGIN
+  PRINT,'ERROR: ELEMENTS OUT OF RANGE. '+STRTRIM(nRaw,2)+' molecule(s) loaded.'
+  RETURN
+ENDIF
 
 mol0=(*self.raw)[elements[0]]
 name0=mol0.name
@@ -689,12 +663,21 @@ if n_elements(elements) ne 1 then begin
     nHarm=N_ELEMENTS(ind2)
     jDMP=WHERE(ind2 GE 0,nDMP,COMPLEMENT=jNoDMP,NCOMPLEMENT=nNoDMP)
 
-    pt=FLTARR(150,nHarm)+!VALUES.F_NAN
-    t_dmp=FLTARR(150,nHarm)+!VALUES.F_NAN
+    nlev=N_ELEMENTS(mol0.alt)
+    nDMPlev=(SIZE((*self.dmp).theta,/DIMENSIONS))[0]
+
+    IF nDMPlev GT nlev THEN BEGIN
+      PRINT,'ERROR: DMP GRID HAS MORE LEVELS ('+STRTRIM(nDMPlev,2)+ $
+            ') THAN THE RETRIEVAL GRID ('+STRTRIM(nlev,2)+')'
+      RETURN
+    ENDIF
+
+    pt=FLTARR(nlev,nHarm)+!VALUES.F_NAN
+    t_dmp=FLTARR(nlev,nHarm)+!VALUES.F_NAN
 
     IF nDMP GT 0 THEN BEGIN
-      pt[0:74,jDMP]=(*self.dmp).theta[*,ind2[jDMP]]
-      t_dmp[0:74,jDMP]=(*self.dmp).temp[*,ind2[jDMP]]
+      pt[0:nDMPlev-1,jDMP]=(*self.dmp).theta[*,ind2[jDMP]]
+      t_dmp[0:nDMPlev-1,jDMP]=(*self.dmp).temp[*,ind2[jDMP]]
     ENDIF
 
     IF nNoDMP GT 0 THEN PRINT,'WARNING: NO DMP MATCH FOR '+STRTRIM(nNoDMP,2)+' OF '+STRTRIM(nHarm,2)+' OCCULTATIONS'
@@ -771,29 +754,26 @@ end
 
 PRO ACEData::setParam,pName,pVal
 
-  names=tag_names(self.params)
-  isParam=where(names.contains(pName,/FOLD_CASE) eq 1)
-  if isParam[0] ne -1 then begin
-    IF pName EQ 'dmp_path' THEN BEGIN
-      IF pVal EQ 'v4p1' THEN BEGIN
-        pVal='/media/benjamin/Data/ACE/ACE-DMPSv4p120210415111208/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
-      ENDIF
-      IF pVal EQ 'v4p1p2' THEN BEGIN
-        pVal='/media/benjamin/Data/ACE/ACE-DMPSv4p1p2/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
-      ENDIF
-      IF pVal EQ 'v5' THEN BEGIN
-        pVal='/media/benjamin/Data/ACE/ACE-DMPSv5p2/ACEFTS_L2_v5p2_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
-      ENDIF
-    ENDIF
-    cmd='self.params.'+pName+'=pVal'
-    res=execute(cmd)
-    result=1
-    if pName EQ 'latlims' OR pName EQ 'lonlims' OR pName EQ 'altlims' OR pName EQ 'nLats' OR pName EQ 'nLons' OR pName eq 'nAlts' THEN self.params.sMod=1
-    if pName EQ 'yearlims' OR pName EQ 'monthlims' OR pName eq 'daylims' OR pName EQ 'hourlims' OR pName eq 'nTimes' THEN self.params.tMod=1
-    if pName EQ 'elims' OR pName EQ 'cuttype' THEN self.params.eMod=1
+  COMPILE_OPT IDL2
+
+  ;----- Exact match on the tag name. The old test was a substring match, so
+  ; setParam,'nLat',... silently wrote to NLATS, and any short name could land
+  ; on the wrong field. -------;
+  names=TAG_NAMES(self.params)
+  upName=STRUPCASE(pName)
+  isParam=WHERE(names EQ upName,nParam)
+
+  if nParam gt 0 then begin
+    IF upName EQ 'DMP_PATH' THEN pVal=self.resolveDMPPath(pVal)
+
+    self.params.(isParam[0])=pVal
+
+    ;----- Mark the dependent stages dirty so calcBlocks knows to recompute. --;
+    IF TOTAL(upName EQ ['LATLIMS','LONLIMS','ALTLIMS','NLATS','NLONS','NALTS']) GT 0 THEN self.params.sMod=1
+    IF TOTAL(upName EQ ['YEARLIMS','MONTHLIMS','DAYLIMS','HOURLIMS','JULLIMS','NTIMES']) GT 0 THEN self.params.tMod=1
+    IF TOTAL(upName EQ ['ELIM','CUTTYPE']) GT 0 THEN self.params.eMod=1
     self.params.bMod=1
   endif else begin
-    result=0
     CASE pName OF
       'ctStandard': BEGIN
         self.params.latlims=[-70,70]
@@ -1121,6 +1101,8 @@ END
 
 FUNCTION ACEData::getParam,pName
 
+  COMPILE_OPT IDL2
+
 IF N_PARAMS() LT 1 THEN BEGIN
   
   PRINT,'Latitude Range',self.params.latLims
@@ -1140,11 +1122,10 @@ IF N_PARAMS() LT 1 THEN BEGIN
   
 ENDIF ELSE BEGIN
 
-  names=tag_names(self.params)
-  isParam=where(names.contains(pName,/FOLD_CASE) eq 1)
-  if isParam[0] ne -1 then begin
-    cmd='result=self.params.'+pName
-    res=execute(cmd)
+  names=TAG_NAMES(self.params)
+  isParam=WHERE(names EQ STRUPCASE(pName),nParam)
+  if nParam gt 0 then begin
+    result=self.params.(isParam[0])
   endif else begin
     result=!values.f_nan
     print,'Parameter name not found'
@@ -1153,6 +1134,54 @@ ENDIF ELSE BEGIN
   RETURN,result
 
 ENDELSE
+
+END
+
+;+
+; =============================================================
+;
+; METHODNAME:
+;       ACEData::resolveDMPPath
+;
+; PURPOSE:
+;       The ACEData::resolveDMPPath function method is a private method and is
+;       not intended to be called directly. It expands the short DMP version
+;       aliases into full paths.
+;
+;       The aliases resolve against the ACE_DATA_ROOT environment variable:
+;
+;           setenv,'ACE_DATA_ROOT=/media/benjamin/Data/ACE'
+;           myData.setParam,'dmp_path','v5'
+;
+;       If ACE_DATA_ROOT is not set, the original hardcoded root is used so
+;       that existing scripts keep working unchanged. Anything that is not a
+;       recognised alias is passed straight through as a literal path.
+;
+; MODIFICATION HISTORY:
+;   Written by: Ben Clouser, 8/4/25
+;-
+
+FUNCTION ACEData::resolveDMPPath,pVal
+
+  COMPILE_OPT IDL2
+
+  root=GETENV('ACE_DATA_ROOT')
+  IF root EQ '' THEN root='/media/benjamin/Data/ACE'
+
+  CASE STRLOWCASE(pVal) OF
+    'v4p1':   subdir='ACE-DMPSv4p120210415111208'
+    'v4p1p2': subdir='ACE-DMPSv4p1p2'
+    'v5':     subdir='ACE-DMPSv5p2'
+    ELSE:     RETURN,pVal
+  ENDCASE
+
+  IF STRLOWCASE(pVal) EQ 'v5' THEN BEGIN
+    fname='ACEFTS_L2_v5p2_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
+  ENDIF ELSE BEGIN
+    fname='ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
+  ENDELSE
+
+  RETURN,FILEPATH(fname,ROOT_DIR=root,SUBDIRECTORY=subdir)
 
 END
 
@@ -1197,6 +1226,8 @@ END
 
 FUNCTION ACEData::getOcc,orbids,SEARCH=search
 
+  COMPILE_OPT IDL2
+
   nOccs=n_elements(orbids)
 
 IF KEYWORD_SET(search) THEN BEGIN
@@ -1226,12 +1257,12 @@ ENDELSE
 CASE (*self.hmz).nmols OF
   1: BEGIN
 
-    out={nmols:(*self.hmz).nmols,name0:(*self.hmz).name0,npass:nOccs,alt:findgen(150)+.5,srss:(*self.hmz).srss[inds],orbit:(*self.hmz).orbit[inds],year:(*self.hmz).year[inds],month:(*self.hmz).month[inds],day:(*self.hmz).day[inds],hour:(*self.hmz).hour[inds],lat:(*self.hmz).lat[inds],lon:(*self.hmz).lon[inds],mixrat0:(*self.hmz).mixrat0[*,inds],mixrat0_err:(*self.hmz).mixrat0_err[*,inds],temp:(*self.hmz).temp[*,inds],pres:(*self.hmz).pres[*,inds],pt:(*self.hmz).pt[*,inds],t_dmp:(*self.hmz).t_dmp[*,inds]}
+    out={nmols:(*self.hmz).nmols,name0:(*self.hmz).name0,npass:nOccs,alt:(*self.hmz).alt,srss:(*self.hmz).srss[inds],orbit:(*self.hmz).orbit[inds],year:(*self.hmz).year[inds],month:(*self.hmz).month[inds],day:(*self.hmz).day[inds],hour:(*self.hmz).hour[inds],lat:(*self.hmz).lat[inds],lon:(*self.hmz).lon[inds],mixrat0:(*self.hmz).mixrat0[*,inds],mixrat0_err:(*self.hmz).mixrat0_err[*,inds],temp:(*self.hmz).temp[*,inds],pres:(*self.hmz).pres[*,inds],pt:(*self.hmz).pt[*,inds],t_dmp:(*self.hmz).t_dmp[*,inds]}
 
   END
   2: BEGIN
 
-    out={nmols:(*self.hmz).nmols,name0:(*self.hmz).name0,name1:(*self.hmz).name1,npass:nOccs,alt:findgen(150)+.5,srss:(*self.hmz).srss[inds],orbit:(*self.hmz).orbit[inds],year:(*self.hmz).year[inds],month:(*self.hmz).month[inds],day:(*self.hmz).day[inds],hour:(*self.hmz).hour[inds],lat:(*self.hmz).lat[inds],lon:(*self.hmz).lon[inds],mixrat0:(*self.hmz).mixrat0[*,inds],mixrat0_err:(*self.hmz).mixrat0_err[*,inds],mixrat1:(*self.hmz).mixrat1[*,inds],mixrat1_err:(*self.hmz).mixrat1_err[*,inds],ratio:(*self.hmz).ratio[*,inds],temp:(*self.hmz).temp[*,inds],pres:(*self.hmz).pres[*,inds],pt:(*self.hmz).pt[*,inds],t_dmp:(*self.hmz).t_dmp[*,inds]}
+    out={nmols:(*self.hmz).nmols,name0:(*self.hmz).name0,name1:(*self.hmz).name1,npass:nOccs,alt:(*self.hmz).alt,srss:(*self.hmz).srss[inds],orbit:(*self.hmz).orbit[inds],year:(*self.hmz).year[inds],month:(*self.hmz).month[inds],day:(*self.hmz).day[inds],hour:(*self.hmz).hour[inds],lat:(*self.hmz).lat[inds],lon:(*self.hmz).lon[inds],mixrat0:(*self.hmz).mixrat0[*,inds],mixrat0_err:(*self.hmz).mixrat0_err[*,inds],mixrat1:(*self.hmz).mixrat1[*,inds],mixrat1_err:(*self.hmz).mixrat1_err[*,inds],ratio:(*self.hmz).ratio[*,inds],temp:(*self.hmz).temp[*,inds],pres:(*self.hmz).pres[*,inds],pt:(*self.hmz).pt[*,inds],t_dmp:(*self.hmz).t_dmp[*,inds]}
     ;stop
   END
 ENDCASE
@@ -1242,7 +1273,9 @@ END
 
 FUNCTION ACEData::getRawData
 
-  IF PTR_VALID(self.raw) THEN BEGIN
+  COMPILE_OPT IDL2
+
+  IF PTR_VALID(self.raw) && N_ELEMENTS(*self.raw) GT 0 THEN BEGIN
     RETURN,(*self.raw)
   ENDIF ELSE BEGIN
     PRINT,'Raw data not defined.'
@@ -1253,7 +1286,9 @@ END
 
 FUNCTION ACEData::getHmzData
 
-  IF PTR_VALID(self.hmz) THEN BEGIN
+  COMPILE_OPT IDL2
+
+  IF PTR_VALID(self.hmz) && N_ELEMENTS(*self.hmz) GT 0 THEN BEGIN
     RETURN,(*self.hmz)
   ENDIF ELSE BEGIN
     PRINT,'Harmonized data not defined.'
@@ -1265,7 +1300,9 @@ END
 
 FUNCTION ACEData::getBlocks
 
-  IF PTR_VALID(self.blocks) THEN BEGIN
+  COMPILE_OPT IDL2
+
+  IF PTR_VALID(self.blocks) && N_ELEMENTS(*self.blocks) GT 0 THEN BEGIN
     RETURN,(*self.blocks)
   ENDIF ELSE BEGIN
     PRINT,'Blocks not defined.'
@@ -1293,7 +1330,10 @@ END
 
 PRO ACEData::areFlagsDefined
 
+  COMPILE_OPT IDL2
+
   npass=(*self.hmz).npass
+  nlev=N_ELEMENTS((*self.hmz).alt)
 
   if self.flags eq !null then begin
 
@@ -1302,7 +1342,7 @@ PRO ACEData::areFlagsDefined
     ; whole IDL session, so {flags,...} sized by npass raised a conflicting
     ; definition error as soon as a second object with a different pass count
     ; was created. -------;
-    B={tflag:boolarr(npass),sflag:boolarr(npass),eflag:boolarr(npass),aflag:boolarr(150,npass)}
+    B={tflag:boolarr(npass),sflag:boolarr(npass),eflag:boolarr(npass),aflag:boolarr(nlev,npass)}
     (*self.flags)=B
   endif
 
@@ -1325,6 +1365,8 @@ END
 ;-
 
 pro ACEData::setTimeFlag,sunrise=sunrise,sunset=sunset
+
+  COMPILE_OPT IDL2
  
   mth_lab=['J','F','M','A','M','J','J','A','S','O','N','D']
   mth_str=''
@@ -1446,6 +1488,8 @@ end
 
 PRO ACEData::setSpaceFlag
 
+  COMPILE_OPT IDL2
+
   self.areFlagsDefined
 
   kran=WHERE((*self.hmz).lat GE self.params.latlims[0] AND (*self.hmz).lat LE self.params.latlims[1] AND (*self.hmz).lon ge self.params.lonlims[0] AND (*self.hmz).lon LE self.params.lonlims[1],nkran,complement=jran,ncomplement=njran)
@@ -1473,15 +1517,19 @@ END
 ;-
 
 PRO ACEData::setErrorFlag,cutByTemp=cutByTemp,cutByRatio=cutByRatio
+
+  COMPILE_OPT IDL2
   
+  nlev=N_ELEMENTS((*self.hmz).alt)
+
   (*self.flags).eflag=1
   IF KEYWORD_SET(cutByTemp) THEN BEGIN
     k=WHERE((*self.hmz).temp LE cutByTemp[0],nk)
     IF nk GT 0 THEN BEGIN
-      z=k MOD 150
+      z=k MOD nlev
       v=WHERE(z GE cutByTemp[1] AND z LE cutByTemp[2],nv)
       IF nv GT 0 THEN BEGIN
-        kOrb=k[v]/150
+        kOrb=k[v]/nlev
         (*self.flags).eflag[kOrb[uniq(kOrb)]]=0
       ENDIF
     ENDIF
@@ -1502,7 +1550,7 @@ PRO ACEData::setErrorFlag,cutByTemp=cutByTemp,cutByRatio=cutByRatio
       ENDIF
       IF self.params.cuttype.contains('scanwise',/FOLD_CASE) THEN BEGIN
         jscan=WHERE((*self.hmz).mixrat0_err ge self.params.eLim,njscan)
-        IF njscan GT 0 THEN (*self.flags).eflag[jscan/150]=0
+        IF njscan GT 0 THEN (*self.flags).eflag[jscan/nlev]=0
       ENDIF
     END
     2: BEGIN
@@ -1513,7 +1561,7 @@ PRO ACEData::setErrorFlag,cutByTemp=cutByTemp,cutByRatio=cutByRatio
       ENDIF
       IF self.params.cuttype.contains('scanwise',/FOLD_CASE) THEN BEGIN
         jscan=WHERE((*self.hmz).mixrat0_err GE self.params.eLim AND (*self.hmz).mixrat1_err GE self.params.elim,njscan)
-        IF njscan GT 0 THEN (*self.flags).eflag[jscan/150]=0
+        IF njscan GT 0 THEN (*self.flags).eflag[jscan/nlev]=0
       ENDIF
     END
   ENDCASE
@@ -1531,7 +1579,9 @@ END
 
 PRO ACEData::errorByExtrema
 
+  COMPILE_OPT IDL2
 
+  MESSAGE,'ACEData::errorByExtrema is not implemented.'
 
 END
 
@@ -1554,9 +1604,11 @@ END
 
 PRO ACEData::isOpMaskDefined
 
+  COMPILE_OPT IDL2
+
   if self.opMask eq !null then begin
     self.opMask=PTR_NEW(/ALLOCATE)
-    C=boolarr(150,(*self.hmz).npass)
+    C=boolarr(N_ELEMENTS((*self.hmz).alt),(*self.hmz).npass)
     (*self.opMask)=C
   endif
 
@@ -1580,6 +1632,8 @@ END
 ;-
 
 PRO ACEData::setOpMask,blats,blons,balts,jdays=jdays,byears=byears,bmonths=bmonths,bdays=bdays,bhours=bhours,sunrise=sunrise,sunset=sunset
+
+  COMPILE_OPT IDL2
 
   self.isOpMaskDefined
   
@@ -1642,20 +1696,22 @@ PRO ACEData::setOpMask,blats,blons,balts,jdays=jdays,byears=byears,bmonths=bmont
   IF nj GT 0 THEN (*self.opMask)[*,j]=0
   ;deal with altitudes here
 
-  if balts[0] gt 0 or balts[1] lt 150 then begin
+  ;----- Level count and grid extent come from the retrieval grid rather than
+  ; assuming 150 levels spanning 0-150 km. -------;
+  alt=(*self.hmz).alt
+  nlev=N_ELEMENTS(alt)
 
-    altind0=intarr(150)
+  if balts[0] gt MIN(alt) or balts[1] lt MAX(alt) then begin
+
+    altind0=intarr(nlev)
     altind0[*]=1
 
-    if balts[0] gt 0 then begin
-      jlo=WHERE((*self.hmz).alt le balts[0],njlo)
-      if njlo gt 0 then altind0[jlo]=0
-    endif
-    if balts[1] lt 150 then begin
-      jhi=WHERE((*self.hmz).alt ge balts[1],njhi)
-      if njhi gt 0 then altind0[jhi]=0
-    endif
-    altind=rebin(altind0,150,(*self.hmz).npass)
+    jlo=WHERE(alt le balts[0],njlo)
+    if njlo gt 0 then altind0[jlo]=0
+    jhi=WHERE(alt ge balts[1],njhi)
+    if njhi gt 0 then altind0[jhi]=0
+
+    altind=rebin(altind0,nlev,(*self.hmz).npass)
     
     (*self.opMask)=((*self.opMask) AND altind)
     
@@ -1682,16 +1738,58 @@ END
 
 PRO ACEData::areBlocksDefined
 
-  if self.blocks eq !null then begin
-    self.blocks=PTR_NEW(/ALLOCATE)
-    if (*self.hmz).nmols eq 1 then begin
-      D={nmols:(*self.hmz).nmols,name0:(*self.hmz).name0,yearlims:[0,0],monthlims:[0,0],daylims:[0,0],hourlims:[0,0],latlims:[0,0],lonlims:[0,0],altlims:[0,0],mean0:0.,sd0:0.,bw0:fltarr(5),meant:0.,sdt:0.,bwt:fltarr(5),meanp:0.,sdp:0.,bwp:fltarr(5),meanLat:0.,sdLat:0.,meanLon:0.,sdLon:0.,nPts:0,orbIDs:PTR_NEW(/ALLOCATE)}
-    endif else begin
-      D={nmols:(*self.hmz).nmols,name0:(*self.hmz).name0,yearlims:[0,0],monthlims:[0,0],daylims:[0,0],hourlims:[0,0],latlims:[0,0],lonlims:[0,0],altlims:[0,0],mean0:0.,sd0:0.,bw0:fltarr(5),mean1:0.,sd1:0.,bw1:fltarr(5),meanRat:0.,sdRat:0.,bwRat:fltarr(5),meant:0.,sdt:0.,bwt:fltarr(5),meanp:0.,sdp:0.,bwp:fltarr(5),meanLat:0.,sdLat:0.,meanLon:0.,sdLon:0.,nPts:0,orbIDs:PTR_NEW(/ALLOCATE)}
-    endelse
-      (*self.blocks)=replicate(D,self.params.nLats,self.params.nLons,self.params.nAlts,self.params.nTimes)
-      self.params.bMod=0
-  endif
+  COMPILE_OPT IDL2
+
+  IF ~PTR_VALID(self.blocks) THEN self.resetBlocks
+
+END
+
+;+
+; =============================================================
+;
+; METHODNAME:
+;       ACEData::blockTemplate
+;
+; PURPOSE:
+;       The ACEData::blockTemplate function method is a private method and is
+;       not intended to be called directly. It returns the structure that one
+;       element of the reduced data array is built from.
+;
+;       This is the single definition of that structure. areBlocksDefined and
+;       resetBlocks previously carried their own copies with different tag
+;       lists, so which fields a block had depended on which path had
+;       allocated the array.
+;
+;       orbIDs is deliberately a null pointer here. The caller allocates one
+;       heap variable per block after REPLICATE; putting a live pointer in the
+;       template would give every block the same one.
+;
+; MODIFICATION HISTORY:
+;   Written by: Ben Clouser, 8/4/25
+;-
+
+FUNCTION ACEData::blockTemplate
+
+  COMPILE_OPT IDL2
+
+  D={nmols:(*self.hmz).nmols,name0:(*self.hmz).name0, $
+     yearlims:[0d0,0d0],monthlims:[0d0,0d0],daylims:[0d0,0d0], $
+     hourlims:[0d0,0d0],jullims:[0d0,0d0], $
+     latlims:[0d0,0d0],lonlims:[0d0,0d0],altlims:[0d0,0d0], $
+     mean0:0.,sd0:0.,bw0:FLTARR(5), $
+     meant:0.,sdt:0.,bwt:FLTARR(5), $
+     meanp:0.,sdp:0.,bwp:FLTARR(5), $
+     meanpt:0.,sdpt:0.,bwpt:FLTARR(5), $
+     meant_dmp:0.,sdt_dmp:0.,bwt_dmp:FLTARR(5), $
+     meanLat:0.,sdLat:0.,meanLon:0.,sdLon:0., $
+     nPts:0L,orbIDs:PTR_NEW()}
+
+  IF (*self.hmz).nmols GT 1 THEN BEGIN
+    D=CREATE_STRUCT(D,'mean1',0.,'sd1',0.,'bw1',FLTARR(5), $
+                      'meanRat',0.,'sdRat',0.,'bwRat',FLTARR(5))
+  ENDIF
+
+  RETURN,D
 
 END
 
@@ -1714,22 +1812,23 @@ END
 
 PRO ACEData::resetBlocks
 
-  self.areBlocksDefined
+  COMPILE_OPT IDL2
 
-  if self.blocks ne !null then begin
-    PTR_FREE,(*self.blocks).orbIDs
+  ;----- Release the per-block heap variables before dropping the array that
+  ; holds the pointers to them. -------;
+  IF PTR_VALID(self.blocks) THEN BEGIN
+    IF N_ELEMENTS(*self.blocks) GT 0 THEN PTR_FREE,(*self.blocks).orbIDs
     PTR_FREE,self.blocks
-    self.blocks=PTR_NEW(/ALLOCATE)
-    if (*self.hmz).nmols eq 1 then begin
-      D={nmols:(*self.hmz).nmols,name0:(*self.hmz).name0,yearlims:[0d0,0d0],monthlims:[0d0,0d0],daylims:[0d0,0d0],hourlims:[0d0,0d0],jullims:[0d0,0d0],latlims:[0d0,0d0],lonlims:[0d0,0d0],altlims:[0d0,0d0],mean0:0.,sd0:0.,bw0:fltarr(5),meant:0.,sdt:0.,bwt:fltarr(5),meanp:0.,sdp:0.,bwp:fltarr(5),meanpt:0.,sdpt:0.,bwpt:fltarr(5),meant_dmp:0.,sdt_dmp:0.,bwt_dmp:FLTARR(5),meanLat:0.,sdLat:0.,meanLon:0.,sdLon:0.,nPts:0,orbIDs:PTR_NEW()}
-    endif else begin
-      D={nmols:(*self.hmz).nmols,name0:(*self.hmz).name0,yearlims:[0d0,0d0],monthlims:[0d0,0d0],daylims:[0d0,0d0],hourlims:[0d0,0d0],jullims:[0d0,0d0],latlims:[0d0,0d0],lonlims:[0d0,0d0],altlims:[0d0,0d0],mean0:0.,sd0:0.,bw0:fltarr(5),mean1:0.,sd1:0.,bw1:fltarr(5),meanRat:0.,sdRat:0.,bwRat:fltarr(5),meant:0.,sdt:0.,bwt:fltarr(5),meanp:0.,sdp:0.,bwp:fltarr(5),meanpt:0.,sdpt:0.,bwpt:fltarr(5),meant_dmp:0.,sdt_dmp:0.,bwt_dmp:FLTARR(5),meanLat:0.,sdLat:0.,meanLon:0.,sdLon:0.,nPts:0,orbIDs:PTR_NEW()}
-    endelse
-    (*self.blocks)=replicate(D,self.params.nLats,self.params.nLons,self.params.nAlts,self.params.nTimes)
-    nblocks=n_elements(*self.blocks)
-    for i=0,nblocks-1 do (*self.blocks)[i].orbIDs=PTR_NEW(/ALLOCATE)
-    self.params.bMod=0
-  endif
+  ENDIF
+
+  self.blocks=PTR_NEW(/ALLOCATE)
+  (*self.blocks)=REPLICATE(self.blockTemplate(),self.params.nLats, $
+                           self.params.nLons,self.params.nAlts,self.params.nTimes)
+
+  nblocks=N_ELEMENTS(*self.blocks)
+  FOR ib=0,nblocks-1 DO (*self.blocks)[ib].orbIDs=PTR_NEW(/ALLOCATE)
+
+  self.params.bMod=0
 
 END
 
@@ -1752,6 +1851,8 @@ END
 ;-
 
 PRO ACEData::emptyBlock,i,j,k,l
+
+  COMPILE_OPT IDL2
 
   nan=!VALUES.F_NAN
   nanbw=FLTARR(5)+nan
@@ -1810,7 +1911,10 @@ END
 
 PRO ACEData::reduceBlock,i,j,k,l
 
+  COMPILE_OPT IDL2
+
   npass=(*self.hmz).npass
+  nlev=N_ELEMENTS((*self.hmz).alt)
 
   goodOrbs=((*self.flags).sflag AND (*self.flags).tflag AND (*self.flags).eflag)
   startOrbs=where(goodOrbs eq 1,nStart)
@@ -1837,7 +1941,7 @@ PRO ACEData::reduceBlock,i,j,k,l
     RETURN
   ENDIF
 
-  finOrbs=kGood/150
+  finOrbs=kGood/nlev
 
   ;print,n_elements(startOrbs)
   ;print,n_elements(goodOrbs)
@@ -1948,6 +2052,19 @@ END
 
 PRO ACEData::calcBlocks,useParam=useParam
 
+  COMPILE_OPT IDL2
+
+  IF ~PTR_VALID(self.hmz) || N_ELEMENTS(*self.hmz) EQ 0 THEN BEGIN
+    PRINT,'ERROR: NO HARMONIZED DATA. Call loadFiles then harmonize first.'
+    RETURN
+  ENDIF
+
+  IF self.params.nLats LT 1 OR self.params.nLons LT 1 OR $
+     self.params.nAlts LT 1 OR self.params.nTimes LT 1 THEN BEGIN
+    PRINT,'ERROR: nLats, nLons, nAlts and nTimes must all be at least 1.'
+    RETURN
+  ENDIF
+
   daysInMonth=[31,28,31,30,31,30,31,31,30,31,30,31]
 
   IF self.params.sMod EQ 1 OR self.params.tMod EQ 1 OR self.params.eMod EQ 1 OR self.params.bMod EQ 1 THEN BEGIN
@@ -2036,8 +2153,15 @@ END
 
 FUNCTION ACEData::makeHist,nbins,range,oneBin=oneBin
 
+  COMPILE_OPT IDL2
+
+  ;----- Unfinished: the oneBin branch was never written, and the branch below
+  ; stops inside its own loop. Left in place for reference rather than deleted.
+  ; -------;
+  MESSAGE,'ACEData::makeHist is not implemented.'
+
   IF keyword_set(oneBin) THEN BEGIN
-    
+
   ENDIF ELSE BEGIN
     nBlocks=self.params.nLats*self.params.nLons*self.params.nAlts*self.params.nTimes
     FOR i=0,nBlocks-1 DO BEGIN
@@ -2049,7 +2173,6 @@ FUNCTION ACEData::makeHist,nbins,range,oneBin=oneBin
         altInd=(*self.blocks)[i].altLims[0]
         hst0=histogram(reform((orbs.ratio[altInd,*]-1d0)*1d3,norbs),min=range[0],max=range[1],nbins=nbins,locations=xbin)
         p=plot(xbin,hst0)
-        stop
       ;ENDFOR
       
     ENDFOR
@@ -2059,7 +2182,9 @@ END
 
 PRO ACEData::setAxes,xaxis,yaxis
 
+  COMPILE_OPT IDL2
 
+  MESSAGE,'ACEData::setAxes is not implemented.'
 
 END
 
@@ -2110,6 +2235,13 @@ END
 
 PRO ACEData::makeContour,ratPlot,mol0Plot,aLevels,useMedian=useMedian
 
+  COMPILE_OPT IDL2
+
+  IF ~PTR_VALID(self.blocks) || N_ELEMENTS(*self.blocks) EQ 0 THEN BEGIN
+    PRINT,'ERROR: NO REDUCED DATA. Call calcBlocks first.'
+    RETURN
+  ENDIF
+
   alt_map=aLevels             ;currently only one level at a time is supported
 
   ct=colortable(72,/reverse)
@@ -2137,6 +2269,19 @@ PRO ACEData::makeContour,ratPlot,mol0Plot,aLevels,useMedian=useMedian
       nlevs=16d0
       mol0range=dindgen(nlevs+1)/nlevs*35d0+390d0
     END
+    ELSE: BEGIN
+      ;----- Any other molecule: span whatever range is actually present in the
+      ; blocks. This CASE previously had no ELSE, so loading anything but H2O
+      ; or CO2 crashed here. -------;
+      nlevs=16d0
+      blockMean=(*self.blocks).mean0
+      kfin=WHERE(FINITE(blockMean),nfin)
+      IF nfin EQ 0 THEN MESSAGE,'No finite block means to contour.'
+      lo=MIN(blockMean[kfin])*1d6
+      hi=MAX(blockMean[kfin])*1d6
+      IF hi LE lo THEN hi=lo+1d0
+      mol0range=dindgen(nlevs+1)/nlevs*(hi-lo)+lo
+    END
 
   endcase
 
@@ -2160,7 +2305,13 @@ PRO ACEData::makeContour,ratPlot,mol0Plot,aLevels,useMedian=useMedian
     grid.linestyle='dotted'
     grid.font_size=16
     grid.label_position=0
-    mapRat.title=self.params.mth_str+' $\delta D$, '+string(alt_map,format='(F4.1)')+' km'
+    ;----- Label the ratio with delta notation only for the H2O/HDO pair. -----;
+    IF (*self.hmz).name0 EQ 'H2O' AND (*self.hmz).name1 EQ 'HDO' THEN BEGIN
+      ratLabel='$\delta D$'
+    ENDIF ELSE BEGIN
+      ratLabel=(*self.hmz).name1+'/'+(*self.hmz).name0
+    ENDELSE
+    mapRat.title=self.params.mth_str+' '+ratLabel+', '+string(alt_map,format='(F4.1)')+' km'
       mapRat.font_size=18
     cb=colorbar(target=cc,title='$\delta D (‰)$',range=[-.840d0,-.540d0]*1d3,orientation=1,textpos=1,font_size=14)
       ;PRINT,'MADE CB'
@@ -2182,7 +2333,7 @@ PRO ACEData::makeContour,ratPlot,mol0Plot,aLevels,useMedian=useMedian
   grid.linestyle='dotted'
   grid.font_size=16
   grid.label_position=0
-  map0.title=self.params.mth_str+' $H_2O$, '+string(alt_map,format='(F4.1)')+' km'
+  map0.title=self.params.mth_str+' '+(*self.hmz).name0+', '+string(alt_map,format='(F4.1)')+' km'
     map0.font_size=18
   cb=colorbar(target=cc,title=(*self.hmz).name0+' (ppm)',range=[mol0range[0],mol0range[n_elements(mol0range)-1]],orientation=1,textpos=1,font_size=14)
   mol0Plot=map0
@@ -2237,6 +2388,8 @@ end
 ;-
 
 PRO ACEData::makeMeridianPlot,ratPlot,mol0Plot,useMedian=useMedian,lats=lats,alts=alts,title=title,dimensions=dimensions,position=position,fs=fs
+
+  COMPILE_OPT IDL2
 
   IF NOT KEYWORD_SET(title) THEN title=''
   IF NOT KEYWORD_SET(dimensions) THEN dims=[1024,1024] ELSE dims=dimensions
@@ -2319,6 +2472,8 @@ END
 
 PRO ACEData::makeTimeSeries,ratPlot,mol0Plot,useMedian=useMedian
 
+  COMPILE_OPT IDL2
+
   ct=colortable(72,/reverse)
 
   if keyword_set(useMedian) then rats=(*self.blocks).bwRat[2] else rats=(*self.blocks).meanRat
@@ -2339,12 +2494,15 @@ END
 
 PRO ACEData::makeZonalPlot,mols,prof,xaxis,yaxis,yearlims=yearlims,monthlims=monthlims,hourlims=hourlims,latlims=latlims,lonlims=lonlims,n_lats=n_lats,n_longs=n_longs,ratio=ratio,ratlims=ratlims,raw=raw,acecut=acecut,fullcut=fullcut
 
-  ct=colortable(72,/reverse)
+  COMPILE_OPT IDL2
 
+  MESSAGE,'ACEData::makeZonalPlot is not implemented.'
 
 END
 
 PRO ACEData::makeHeightTimePlot,mol0,rat0,alt_map=alt_map,yearlims=yearlims,monthlims=monthlims,hourlims=hourlims,latlims=latlims,lonlims=lonlims,n_lats=n_lats,n_longs=n_longs,ratio=ratio,ratlims=ratlims,raw=raw,acecut=acecut,fullcut=fullcut,xrange=xrange
+
+  COMPILE_OPT IDL2
 
   IF NOT KEYWORD_SET(xrange) THEN xrange=[]
   
@@ -2378,6 +2536,8 @@ END
 
 pro ACEData::makeMeanSD,xname,yname,spag,savPlot=savPlot,spaghetti=spaghetti,colorby=colorby,outcols=outcols,title=title,nomean=nomean
 
+  COMPILE_OPT IDL2
+
   ct=colortable(72,/reverse)
   nspg=n_elements(insrat)
   IF NOT KEYWORD_SET(title) THEN title=''
@@ -2387,13 +2547,11 @@ pro ACEData::makeMeanSD,xname,yname,spag,savPlot=savPlot,spaghetti=spaghetti,col
           ymean=self.params.altlims[0]+dindgen(self.params.nAlts)+0.5d0
           ytitle='Altitude (km)'
           yrange=self.params.altlims
-          cmdy='orbs.alt[jk]'
         END
         'pt':BEGIN
           ymean=reform((*self.blocks).meanpt,self.params.nAlts)
           ytitle='$\Theta (K)$'
           yrange=[300,500]
-          cmdy='orbs.pt[jk]'
         END
         'mol0':BEGIN
           ymean=reform((*self.blocks).mean0*1d6,self.params.nAlts)
@@ -2401,7 +2559,6 @@ pro ACEData::makeMeanSD,xname,yname,spag,savPlot=savPlot,spaghetti=spaghetti,col
           ybw=reform((*self.blocks).bw0,5,self.params.nAlts)
           ytitle='$H_2O (ppm)$'
           yrange=[0,100]
-          cmdy='orbs.mixrat0[jk,is]*1d6'
         END
         'temp':BEGIN
           ymean=reform((*self.blocks).meant,self.params.nAlts)
@@ -2409,8 +2566,9 @@ pro ACEData::makeMeanSD,xname,yname,spag,savPlot=savPlot,spaghetti=spaghetti,col
           ybw=reform((*self.blocks).bwt,5,self.params.nAlts)
           ytitle='Temp. (K)'
           yrange=[180,270]
-          cmdy='orbs.temp[jk,is]'
         END
+        ELSE: MESSAGE,'Unrecognised yname: '+STRTRIM(yname,2)+ $
+                      '. Expected one of alt, pt, mol0, temp.'
       ENDCASE
 
       CASE xname OF
@@ -2420,7 +2578,6 @@ pro ACEData::makeMeanSD,xname,yname,spag,savPlot=savPlot,spaghetti=spaghetti,col
           xbw=reform(((*self.blocks).bwrat-1d0)*1d3,5,self.params.nAlts)
           xtitle='$\delta D (‰)$'
           xrange=[-2000,1000]
-          cmdx='(orbs.ratio[jk,is]-1d0)*1d3'
         END
         'mol0':BEGIN
           xmean=reform((*self.blocks).mean0*1d6,self.params.nAlts)
@@ -2428,7 +2585,6 @@ pro ACEData::makeMeanSD,xname,yname,spag,savPlot=savPlot,spaghetti=spaghetti,col
           xbw=reform((*self.blocks).bw0,5,self.params.nAlts)
           xtitle='$H_2O (ppm)$'
           xrange=[0,500]
-          cmdx='orbs.mixrat0[jk,is]*1d6'
         END
         'mol1':BEGIN
           xmean=reform((*self.blocks).mean1*1d6,self.params.nAlts)
@@ -2436,7 +2592,6 @@ pro ACEData::makeMeanSD,xname,yname,spag,savPlot=savPlot,spaghetti=spaghetti,col
           xbw=reform((*self.blocks).bw1,5,self.params.nAlts)
           xtitle='$HDO (ppm)$'
           xrange=[0,500]
-          cmdx='orbs.mixrat1[jk,is]*1d6'
         END
         'temp':BEGIN
           xmean=reform((*self.blocks).meant,self.params.nAlts)
@@ -2444,7 +2599,6 @@ pro ACEData::makeMeanSD,xname,yname,spag,savPlot=savPlot,spaghetti=spaghetti,col
           xbw=reform((*self.blocks).bwt,5,self.params.nAlts)
           xtitle='Temp. (K)'
           xrange=[180,270]
-          cmdx='orbs.temp[jk,is]'
         END
         'pres':BEGIN
           xmean=reform((*self.blocks).meanp,self.params.nAlts)
@@ -2452,8 +2606,9 @@ pro ACEData::makeMeanSD,xname,yname,spag,savPlot=savPlot,spaghetti=spaghetti,col
           xbw=reform((*self.blocks).bwp,5,self.params.nAlts)
           xtitle='Pres. (hPa)'
           xrange=[0,1]
-          cmdx='orbs.pres[jk,is]'
         END
+        ELSE: MESSAGE,'Unrecognised xname: '+STRTRIM(xname,2)+ $
+                      '. Expected one of delta, mol0, mol1, temp, pres.'
       ENDCASE
 
       if keyword_set(savPlot) then spag=boxplot(ymean,xbw,xtitle=xtitle,ytitle=ytitle,font_size=16,xthick=2,ythick=2,/horizontal,xrange=xrange,yrange=yrange,dimensions=[640,720],title=title,/buffer) else spag=boxplot(ymean,xbw,xtitle=xtitle,ytitle=ytitle,font_size=16,xthick=2,ythick=2,/horizontal,xrange=xrange,yrange=yrange,dimensions=[640,720],title=title)
@@ -2500,8 +2655,27 @@ pro ACEData::makeMeanSD,xname,yname,spag,savPlot=savPlot,spaghetti=spaghetti,col
       IF njk EQ 0 THEN CONTINUE
       jk1=where(ymean ge orbs.alt[jk[0]])
       
-      cmd='p=plot('+cmdx+','+cmdy+',transparency=85,color=color,/overplot)'
-      res=execute(cmd)
+      ;----- Select this occultation's profile explicitly. This replaces an
+      ; EXECUTE that assembled the plot call from cmdx/cmdy strings. Writing
+      ; the subscripts out showed that the pt case was reading orbs.pt[jk],
+      ; which indexes the flattened 2-D array and so always returned the first
+      ; occultation regardless of is. -------;
+      CASE yname OF
+        'alt':  ydat=orbs.alt[jk]
+        'pt':   ydat=orbs.pt[jk,is]
+        'mol0': ydat=orbs.mixrat0[jk,is]*1d6
+        'temp': ydat=orbs.temp[jk,is]
+      ENDCASE
+
+      CASE xname OF
+        'delta': xdat=(orbs.ratio[jk,is]-1d0)*1d3
+        'mol0':  xdat=orbs.mixrat0[jk,is]*1d6
+        'mol1':  xdat=orbs.mixrat1[jk,is]*1d6
+        'temp':  xdat=orbs.temp[jk,is]
+        'pres':  xdat=orbs.pres[jk,is]
+      ENDCASE
+
+      p=plot(xdat,ydat,transparency=85,color=color,/overplot)
       
       IF KEYWORD_SET(outcols) THEN BEGIN
         onecall=DBLARR(3,N_ELEMENTS(jk))
@@ -2523,6 +2697,13 @@ end
 
 pro ACEData::makeMeanSDTP,xname,yname,savPlot=savPlot
 
+  COMPILE_OPT IDL2
+
+  ;----- Unfinished: this body refers to n_longs, lat, jrat, latsran, temp,
+  ; pres and alt, none of which are defined in this scope or passed in. It has
+  ; never been able to run. Left in place for reference rather than deleted.
+  ; -------;
+  MESSAGE,'ACEData::makeMeanSDTP is not implemented.'
 
   ct=colortable(72,/reverse)
 
@@ -2609,6 +2790,8 @@ end
 
 PRO ACEData::makeSpotMap,alts,altlims=altlims,outplot=outplot,postfix=postfix
 
+  COMPILE_OPT IDL2
+
 IF NOT KEYWORD_SET(altlims) THEN alims=DINDGEN(28)+12.5 ELSE alims=DINDGEN(altlims[1]-altlims[0]+1)+altlims[0]
 IF NOT KEYWORD_SET(postfix) THEN postfix=''
 
@@ -2644,7 +2827,6 @@ FOR i=0,nAlts-1 DO BEGIN
   ;stop
   dd=(orbs.ratio[kAlt,*]-1d0)*1d3
   p=plot(orbs.lon,orbs.lat,'.',sym_filled=1,sym_size=10,vert_colors=BYTSCL(dd,min=-760,max=-300),rgb_table=colortable(72,/reverse),font_size=18,title=STRING(alts[i],FORMAT='(F5.1)')+' km',/overplot)
-  stop
 ENDFOR
 
 cb=colorbar(target=p,title='$\delta D (‰)$',range=[-.760d0,-.300d0]*1d3,position=[0.2,0.005,0.8,0.025],orientation=0,textpos=1,font_size=8)
@@ -2655,11 +2837,15 @@ END
 
 PRO ACEData::stopView
 
+  COMPILE_OPT IDL2
+
 stop
   
 END
 
 PRO ACEData__define
+
+  COMPILE_OPT IDL2
 
   A={paramsA,yearlims:[0.,0.],monthlims:[0.,0.],daylims:[0.,0.],hourlims:[0.,0.],jullims:[0.,0.],latlims:[0.,0.],lonlims:[0.,0.],altlims:[0.,0.],nTimes:0.,nLats:0.,nLons:0.,nAlts:0.,oParamName:'',oParamLims:[0.,0.],oParamNum:0.,mth_str:'',elim:0d0,cuttype:'',tMod:boolean(0),sMod:boolean(0),eMod:boolean(0),bMod:boolean(0),solidBlock:boolean(0),isDMP:boolean(0),dmp_path:''}
   struct={ACEData,raw:PTR_NEW(),hmz:PTR_NEW(),flags:PTR_NEW(),opMask:PTR_NEW(),blocks:PTR_NEW(),dmp:PTR_NEW(),params:A}

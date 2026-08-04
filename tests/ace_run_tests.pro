@@ -272,6 +272,94 @@ PRO ace_run_tests,batch=batch
   OBJ_DESTROY,d
 
   ; ================================================================
+  PRINT,'Parameter handling'
+  ; ================================================================
+
+  d=OBJ_NEW('ACETest')
+  d.injectHmz,npass=40
+
+  d.setParam,'nLats',5
+  ace_assert_close,'setParam sets an exact name',d.getParam('nLats'),5.0
+  d.setParam,'NLATS',6
+  ace_assert_close,'setParam is case insensitive',d.getParam('nLats'),6.0
+
+  ; 'nLat' is a substring of NLATS. The old substring match wrote to it.
+  d.setParam,'nLat',99
+  ace_assert_close,'setParam ignores a partial name',d.getParam('nLats'),6.0
+
+  ; eLim used to be compared against the string 'elims', so the error stage
+  ; was never marked dirty when the limit changed.
+  d.setParam,'elim',1d-4
+  ace_assert_close,'changing eLim marks the error stage dirty',d.getParam('eMod'),1.0
+
+  SETENV,'ACE_DATA_ROOT=/tmp/aceroot'
+  d.setParam,'dmp_path','v5'
+  ace_assert_true,'the v5 alias resolves under ACE_DATA_ROOT', $
+                  d.getParam('dmp_path') EQ $
+                  '/tmp/aceroot/ACE-DMPSv5p2/ACEFTS_L2_v5p2_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
+  d.setParam,'dmp_path','v4p1p2'
+  ace_assert_true,'the v4p1p2 alias resolves under ACE_DATA_ROOT', $
+                  d.getParam('dmp_path') EQ $
+                  '/tmp/aceroot/ACE-DMPSv4p1p2/ACEFTS_L2_v4p1_GLC_GEOS5MERRA2_DynEqL_jv301.nc4'
+  d.setParam,'dmp_path','/a/literal/path.nc4'
+  ace_assert_true,'a literal DMP path passes through unchanged', $
+                  d.getParam('dmp_path') EQ '/a/literal/path.nc4'
+  SETENV,'ACE_DATA_ROOT='
+
+  OBJ_DESTROY,d
+
+  ; ================================================================
+  PRINT,'Block array structure'
+  ; ================================================================
+
+  d=OBJ_NEW('ACETest')
+  d.injectHmz,npass=40
+  ace_test_setgrid,d
+  d.calcBlocks
+  b=d.getBlocks()
+  tags=TAG_NAMES(b[0])
+
+  ; areBlocksDefined and resetBlocks used to build different tag lists.
+  ace_assert_true,'block struct carries the potential temperature fields', $
+                  TOTAL(tags EQ 'MEANPT') EQ 1 AND TOTAL(tags EQ 'BWPT') EQ 1
+  ace_assert_true,'block struct carries the DMP temperature fields', $
+                  TOTAL(tags EQ 'MEANT_DMP') EQ 1 AND TOTAL(tags EQ 'BWT_DMP') EQ 1
+  ace_assert_true,'block struct carries jullims', TOTAL(tags EQ 'JULLIMS') EQ 1
+
+  ; nPts was a 16-bit int, which overflows at 32767 points in a bin.
+  ace_assert_eq,'nPts is a 32-bit long',SIZE(b[0].nPts,/TYPE),3
+
+  ; A live pointer in the REPLICATE template gave every block the same heap
+  ; variable, so all of them reported the same orbit list.
+  ace_assert_true,'blocks hold distinct orbID lists', $
+                  TOTAL((*b[0,0,0,0].orbIDs) NE (*b[1,0,0,0].orbIDs)) GT 0
+
+  OBJ_DESTROY,d
+
+  ; ================================================================
+  PRINT,'Prerequisite guards'
+  ; ================================================================
+
+  d=OBJ_NEW('ACETest')
+  d.calcBlocks
+  ace_assert_true,'calcBlocks without harmonized data returns quietly', $
+                  N_ELEMENTS(d.getBlocks()) EQ 0
+  OBJ_DESTROY,d
+
+  d=OBJ_NEW('ACETest')
+  d.harmonize,[0,1]
+  ace_assert_true,'harmonize without raw data returns quietly', $
+                  N_ELEMENTS(d.getHmzData()) EQ 0
+  OBJ_DESTROY,d
+
+  d=OBJ_NEW('ACETest')
+  d.injectRaw,npass=6
+  d.harmonize,[0,5]
+  ace_assert_true,'harmonize rejects out-of-range elements', $
+                  N_ELEMENTS(d.getHmzData()) EQ 0
+  OBJ_DESTROY,d
+
+  ; ================================================================
   PRINT,''
   PRINT,STRING(nRun-nFail,FORMAT='(I0)')+' / '+STRING(nRun,FORMAT='(I0)')+' passed'
   IF nFail GT 0 THEN PRINT,STRING(nFail,FORMAT='(I0)')+' FAILED'
