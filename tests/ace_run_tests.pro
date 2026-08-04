@@ -216,9 +216,9 @@ PRO ace_run_tests,batch=batch
   ; ================================================================
   PRINT,'Two-molecule statistics'
   ; ================================================================
-  ; mixrat1 is exactly 2 * mixrat0, so every ratio is exactly 2 and mean1
-  ; must be twice mean0. This is what catches reduceBlock reading mixrat0
-  ; into mr1.
+  ; mixrat[*,*,1] is exactly 2 * mixrat[*,*,0], so every ratio is exactly 2
+  ; and mean1 must be twice mean0. This is what catches reduceBlock reading
+  ; the wrong molecule into the second slot.
 
   d=OBJ_NEW('ACETest')
   d.injectHmz,npass=40,nmols=2
@@ -231,6 +231,116 @@ PRO ace_run_tests,batch=batch
   ace_assert_close,'mean1 is twice mean0',REFORM(b.mean1),2.0*REFORM(b.mean0)
   ace_assert_true,'mean1 differs from mean0',TOTAL(REFORM(b.mean1) EQ REFORM(b.mean0)) EQ 0
 
+  ; The generalized arrays must agree with the legacy scalar aliases.
+  ace_assert_close,'mean[0] matches the mean0 alias',REFORM(b.mean[0]),REFORM(b.mean0)
+  ace_assert_close,'mean[1] matches the mean1 alias',REFORM(b.mean[1]),REFORM(b.mean1)
+  ace_assert_close,'sd[1] matches the sd1 alias',REFORM(b.sd[1]),REFORM(b.sd1)
+  ace_assert_close,'meanRatio[0] matches the meanRat alias', $
+                   REFORM(b.meanRatio[0]),REFORM(b.meanRat)
+  ace_assert_close,'bwRatio[2,0] matches the bwRat[2] alias', $
+                   REFORM(b.bwRatio[2,0]),REFORM(b.bwRat[2])
+
+  OBJ_DESTROY,d
+
+  ; ================================================================
+  PRINT,'Arbitrary molecule count'
+  ; ================================================================
+  ; Molecule m is (m+1) times the primary, so ratio m-1 is exactly m+1
+  ; everywhere and every statistic has a known closed form.
+
+  FOREACH nm,[1,2,3,5] DO BEGIN
+
+    d=OBJ_NEW('ACETest')
+    d.injectHmz,npass=40,nmols=nm
+    ace_test_setgrid,d
+    d.calcBlocks
+    b=d.getBlocks()
+
+    tag='nmols='+STRTRIM(nm,2)+': '
+    ace_assert_eq,tag+'nmols recorded on the block',b[0].nmols,nm
+    ace_assert_eq,tag+'mean has one entry per molecule', $
+                  N_ELEMENTS(b[0].mean),nm
+    ; IDL drops a trailing dimension of size 1, so bw reports [5] when nmols=1.
+    ace_assert_eq,tag+'bw is 5 x nmols',SIZE(b[0].bw,/DIMENSIONS), $
+                  (nm EQ 1) ? [5] : [5,nm]
+    ace_assert_eq,tag+'names has one entry per molecule', $
+                  N_ELEMENTS(b[0].names),nm
+
+    lo=FINDGEN(20)
+    base=MEAN((21.0+lo/10.0)*1.0e-6)
+
+    FOR m=0,nm-1 DO $
+      ace_assert_close,tag+'mean['+STRTRIM(m,2)+'] is '+STRTRIM(m+1,2)+'x the primary', $
+                       b[0,0,0,0].mean[m],(m+1)*base
+
+    IF nm GT 1 THEN BEGIN
+      ace_assert_eq,tag+'meanRatio has nmols-1 entries', $
+                    N_ELEMENTS(b[0].meanRatio),nm-1
+      FOR m=0,nm-2 DO $
+        ace_assert_close,tag+'meanRatio['+STRTRIM(m,2)+'] is exactly '+STRTRIM(m+2,2), $
+                         REFORM(b.meanRatio[m]),DBLARR(4)+(m+2.0)
+      ; The ratio is constant, so its spread should be zero to within float
+      ; rounding. It is exactly zero only when m+2 is a power of two, since
+      ; then (m+2)*x/x is exact; 3*x/x and 5*x/x are not.
+      FOR m=0,nm-2 DO $
+        ace_assert_true,tag+'sdRatio['+STRTRIM(m,2)+'] is negligible', $
+                        MAX(ABS(REFORM(b.sdRatio[m]))) LT 1.0e-6*(m+2.0)
+      ; Legacy aliases must still track the first molecule and first ratio.
+      ace_assert_close,tag+'mean0 alias tracks mean[0]',REFORM(b.mean0),REFORM(b.mean[0])
+      ace_assert_close,tag+'meanRat alias tracks meanRatio[0]', $
+                       REFORM(b.meanRat),REFORM(b.meanRatio[0])
+    ENDIF ELSE BEGIN
+      ace_assert_true,tag+'no ratio fields for a single molecule', $
+                      TOTAL(TAG_NAMES(b[0]) EQ 'MEANRATIO') EQ 0
+    ENDELSE
+
+    ; Empty bins stay NaN across every molecule and ratio.
+    ace_test_setgrid,d,nLats=4,latlims=[-90,90],altlims=[20,21],nAlts=1
+    d.calcBlocks
+    b2=d.getBlocks()
+    ace_assert_true,tag+'empty bins are NaN for every molecule', $
+                    TOTAL(FINITE(b2[0,0,0,0].mean)) EQ 0
+    IF nm GT 1 THEN ace_assert_true,tag+'empty bins are NaN for every ratio', $
+                    TOTAL(FINITE(b2[0,0,0,0].meanRatio)) EQ 0
+
+    OBJ_DESTROY,d
+
+  ENDFOREACH
+
+  ; ================================================================
+  PRINT,'harmonize across more than two molecules'
+  ; ================================================================
+  ; Molecule 1 is stored in reverse orbit order and molecules after the first
+  ; withhold their last 2 occultations, so the intersection has to cope with
+  ; different sizes and different orderings.
+
+  d=OBJ_NEW('ACETest')
+  d.injectRaw,npass=8,nmols=4,drop=2,nDMP=3
+  d.harmonize,[0,1,2,3]
+  h=d.getHmzData()
+
+  ace_assert_eq,'harmonize keeps the 6 common occultations',h.npass,6
+  ace_assert_eq,'harmonize records 4 molecules',h.nmols,4
+  ace_assert_eq,'mixrat is nlev x npass x nmols',SIZE(h.mixrat,/DIMENSIONS),[150,6,4]
+  ace_assert_eq,'ratio is nlev x npass x nmols-1',SIZE(h.ratio,/DIMENSIONS),[150,6,3]
+  ace_assert_eq,'orbits come out in primary order',h.orbit,LINDGEN(6)+100L
+  ace_assert_true,'names are carried through', $
+                  ARRAY_EQUAL(h.names,['H2O','HDO','H2O_18','H2O_17'])
+
+  ; injectRaw makes molecule m equal to (m+1)*5e-6, so despite molecule 1 being
+  ; reversed, a correct match gives ratio m-1 = m+2 at every point.
+  FOR m=0,2 DO $
+    ace_assert_close,'ratio['+STRTRIM(m,2)+'] is exactly '+STRTRIM(m+2,2), $
+                     REFORM(h.ratio[0,*,m]),FLTARR(6)+(m+2.0)
+
+  OBJ_DESTROY,d
+
+  ; A molecule sharing no orbits with the primary must be rejected.
+  d=OBJ_NEW('ACETest')
+  d.injectRaw,npass=4,nmols=2,/disjoint
+  d.harmonize,[0,1]
+  ace_assert_true,'harmonize rejects a molecule with no common orbits', $
+                  N_ELEMENTS(d.getHmzData()) EQ 0
   OBJ_DESTROY,d
 
   ; ================================================================
@@ -265,6 +375,10 @@ PRO ace_run_tests,batch=batch
   o=d.getOcc([1000L,1005L],/SEARCH)
   ace_assert_eq,'/SEARCH finds 2 known orbits',o.npass,2
   ace_assert_close,'/SEARCH returns the right latitudes',o.lat,[5.0,10.0]
+
+  ; Trailing dimension of 1 is dropped again: one molecule reports [150,2].
+  ace_assert_eq,'getOcc mirrors the harmonized mixrat layout', $
+                SIZE(o.mixrat,/DIMENSIONS),[150,2]
 
   o2=d.getOcc([999999L],/SEARCH)
   ace_assert_true,'/SEARCH on an absent orbit returns !NULL',N_ELEMENTS(o2) EQ 0

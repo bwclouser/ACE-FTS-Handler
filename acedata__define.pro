@@ -37,16 +37,48 @@
 ;       ACEData::setTimeFlag
 ;       ACEData::setSpaceFlag
 ;       ACEData::setErrorFlag
-;       ACEData::isOpMaskDefined
-;       ACEData::setOpMask
 ;       ACEData::areBlocksDefined
+;       ACEData::blockTemplate
 ;       ACEData::resetBlocks
+;       ACEData::emptyBlock
+;       ACEData::blockPasses
+;       ACEData::reduceCache
 ;       ACEData::reduceBlock
 ;       ACEData::calcBlocks
 ;       ACEData::makeContour
 ;       ACEData::makeMeridianPlot
 ;       ACEData::makeTimeSeries
-;       
+;       ACEData::makeHeightTimePlot
+;       ACEData::makeMeanSD
+;       ACEData::makeSpotMap
+;
+;       Deprecated:
+;       ACEData::isOpMaskDefined
+;       ACEData::setOpMask       -- superseded by ACEData::blockPasses
+;
+; DATA LAYOUT:
+;
+;       Any number of molecules can be harmonized together. In the harmonized
+;       structure returned by ACEData::getHmzData, and in the per-occultation
+;       structure returned by ACEData::getOcc, the molecules stack along the
+;       third dimension:
+;
+;           mixrat[nLevels,nPass,nMols]
+;           mixrat_err[nLevels,nPass,nMols]
+;           ratio[nLevels,nPass,nMols-1]    each molecule over the primary
+;           names[nMols]
+;
+;       In the reduced data returned by ACEData::getBlocks, the statistics are
+;       indexed the same way:
+;
+;           mean[nMols]      sd[nMols]      bw[5,nMols]
+;           meanRatio[nMols-1]  sdRatio[...]  bwRatio[5,...]
+;
+;       Each block also carries the scalar names that predate this: mean0, sd0,
+;       bw0, and for two or more molecules mean1, sd1, bw1, meanRat, sdRat and
+;       bwRat. Those track the first molecule and the first ratio, and are kept
+;       so that existing scripts and saved block arrays keep working.
+;
 ; USAGE:
 ;   These programs are designed for use with ACE-FTS v4.1 retrievals. There is no guarantee they
 ;   will work properly with other versions of the data. Ideally, the user will only need to interact
@@ -496,10 +528,18 @@ END
 ; PURPOSE:
 ;       The ACEData::harmonize procedure method operates on the raw data loaded
 ;       into the ACE Data object by the ACEData::loadFiles procedure method. This method
-;       finds retrievals common to ALL molecules and stores them in a new data structure.
-;       (Currently, only 2 molecules are supported.) Additionally, the first molecule provided
-;       to ACEData::loadFiles is considered to be the 'primary' molecule, and ACEData::harmonize
-;       calculates the ratio of each subsequent molecule to the primary molecule.
+;       finds retrievals common to ALL of the requested molecules and stores them in a
+;       new data structure. Any number of molecules is supported. The first molecule in
+;       the elements array is the 'primary' molecule, and ACEData::harmonize calculates
+;       the ratio of each subsequent molecule to it, so N molecules give N-1 ratios.
+;
+;       Occultations are matched on orbit number together with the sunrise/sunset
+;       flag. An occultation is kept only if every requested molecule has a retrieval
+;       for it, so adding a molecule can only narrow the result. The harmonized arrays
+;       come out in the primary molecule's occultation order.
+;
+;       See the DATA LAYOUT section of the class header for how the molecules and
+;       ratios are indexed.
 ;
 ;
 ; CALLING SEQUENCE:
@@ -526,6 +566,16 @@ END
 ;       
 ;       then H2O_162 will be the primary molecule.
 ;
+;       The array can name any number of molecules. Given four files loaded in
+;       order, 
+;       
+;       myData.harmonize,[0,1,2,3]
+;       
+;       keeps the occultations common to all four, with molecule 0 as primary and
+;       three ratios against it. The order of the array sets the order of the
+;       mixrat, names, mean and bw dimensions, so harmonize,[2,0,1] makes the
+;       third file loaded the primary.
+;
 ; OPTIONAL INPUTS:  NONE
 ;
 ; KEYWORD PARAMETERS: 
@@ -545,157 +595,164 @@ PRO ACEData::harmonize,elements,addDMP=addDMP
 
   COMPILE_OPT IDL2
 
-IF ~PTR_VALID(self.raw) || N_ELEMENTS(*self.raw) EQ 0 THEN BEGIN
-  PRINT,'ERROR: NO RAW DATA. Call loadFiles first.'
-  RETURN
-ENDIF
-
-nRaw=(*self.raw).count()
-IF MIN(elements) LT 0 OR MAX(elements) GE nRaw THEN BEGIN
-  PRINT,'ERROR: ELEMENTS OUT OF RANGE. '+STRTRIM(nRaw,2)+' molecule(s) loaded.'
-  RETURN
-ENDIF
-
-mol0=(*self.raw)[elements[0]]
-name0=mol0.name
-
-orb0=mol0.orbit
-srss0=mol0.srss
-
-n_mols=N_ELEMENTS(elements)
-
-if n_elements(elements) ne 1 then begin
-
-  mol1=(*self.raw)[elements[1]]
-  name1=mol1.name
-
-  mndim=min([mol0.npass,mol1.npass],jloc)         ;determines which structure has fewer elements
-
-  orb1=mol1.orbit
-  srss1=mol1.srss
-
-  ind0=[]
-  ind1=[]
-  
-  IF KEYWORD_SET(addDMP) THEN BEGIN
-    IF PTR_VALID(self.dmp) THEN BEGIN
-      IF *self.dmp ne !NULL THEN BEGIN
-        isFind=1
-        self.params.isDMP=1B
-        ind2=[]
-      ENDIF ELSE BEGIN
-        PRINT,'ERROR: DMP NOT LOADED'
-      ENDELSE
-    ENDIF ELSE BEGIN
-      PRINT,'ERROR: POINTER TO DMP NOT VALID'
-    ENDELSE
-  ENDIF ELSE BEGIN
-    isFind=0
-  ENDELSE
-  
-  ;----- This if/else statement and for loop finds all orbits that are present in BOTH structures
-  ; and returns their respective indices in the ind0 and ind1 arrays -------;
-  if jloc[0] eq 0 then begin
-    for i=0,mndim-1 do begin
-      x=WHERE(orb0[i] EQ orb1 AND srss0[i] EQ srss1)
-      if x[0] NE -1 then begin
-        ind0=[ind0,i]
-        ind1=[ind1,x]
-        IF isFind THEN BEGIN
-          ;----- A matching DMP entry is not guaranteed to exist. Record -1 for the
-          ; misses so ind2 stays aligned with ind0, and fill them in below. -------;
-          y=WHERE(orb0[i] EQ (*self.dmp).orbit AND srss0[i] EQ (*self.dmp).srss,ny)
-          IF ny GT 0 THEN ind2=[ind2,y[0]] ELSE ind2=[ind2,-1L]
-        ENDIF
-      endif
-    endfor
-  endif else begin
-    for i=0,mndim-1 do begin
-      x=where(orb1[i] eq orb0 and srss1[i] eq srss0)
-      if x[0] ne -1 then begin
-        ind0=[ind0,x]
-        ind1=[ind1,i]
-        IF isFind THEN BEGIN
-          y=WHERE(orb1[i] EQ (*self.dmp).orbit AND srss1[i] EQ (*self.dmp).srss,ny)
-          IF ny GT 0 THEN ind2=[ind2,y[0]] ELSE ind2=[ind2,-1L]
-        ENDIF
-      endif
-    endfor
-  endelse
-
-  ;-------- This block defines the structure in the ratio and no ratio cases --------;
-
-;  if KEYWORD_SET(addDMP) THEN BEGIN
-;    orbits=mol0.orbit[ind0]
-;    srsss=mol0.srss[ind0]
-;    npass=n_elements(ind0)
-;    if PTR_VALID(self.dmp) THEN BEGIN
-;      IF *self.dmp ne !NULL THEN BEGIN
-;        n_orbs=n_elements((*self.dmp).orbit)
-;        n_alts=75
-;        pt=fltarr(150,npass)
-;        FOR j=0,npass-1 DO BEGIN
-;          k=WHERE((*self.dmp).orbit EQ orbits[j] AND (*self.dmp).srss EQ srsss[j])
-;          pt[0:n_alts-1,j]=(*self.dmp).theta[*,k]
-;        ENDFOR
-;        molout={nmols:n_mols,name0:mol0.name,name1:mol1.name,npass:n_elements(ind0),alt:mol0.alt,srss:mol0.srss[ind0],orbit:mol0.orbit[ind0],year:mol0.year[ind0],month:mol0.month[ind0],day:mol0.day[ind0],hour:mol0.hour[ind0],lat:mol0.lat[ind0],lon:mol0.lon[ind0],mixrat0:mol0.mixrat[*,ind0],mixrat0_err:mol0.mixrat_err[*,ind0],mixrat1:mol1.mixrat[*,ind1],ratio:mol1.mixrat[*,ind1]/mol0.mixrat[*,ind0],mixrat1_err:mol1.mixrat_err[*,ind1],temp:mol0.temp[*,ind0],pres:mol0.pres[*,ind0],pt:pt}
-;      ENDIF ELSE BEGIN
-;        PRINT,'ERROR: DMP NOT LOADED'
-;      ENDELSE
-;    ENDIF ELSE BEGIN
-;      PRINT,'ERROR: POINTER TO DMP NOT VALID'
-;    ENDELSE
-;  ENDIF ELSE BEGIN
-;    molout={nmols:n_mols,name0:mol0.name,name1:mol1.name,npass:n_elements(ind0),alt:mol0.alt,srss:mol0.srss[ind0],orbit:mol0.orbit[ind0],year:mol0.year[ind0],month:mol0.month[ind0],day:mol0.day[ind0],hour:mol0.hour[ind0],lat:mol0.lat[ind0],lon:mol0.lon[ind0],mixrat0:mol0.mixrat[*,ind0],mixrat0_err:mol0.mixrat_err[*,ind0],mixrat1:mol1.mixrat[*,ind1],ratio:mol1.mixrat[*,ind1]/mol0.mixrat[*,ind0],mixrat1_err:mol1.mixrat_err[*,ind1],temp:mol0.temp[*,ind0],pres:mol0.pres[*,ind0],pt:mol0.temp*(1d0/mol0.pres)^.286d0}
-;  ENDELSE  
-
-  IF N_ELEMENTS(ind0) EQ 0 THEN BEGIN
-    PRINT,'ERROR: NO OCCULTATIONS COMMON TO '+name0+' AND '+name1
+  IF ~PTR_VALID(self.raw) || N_ELEMENTS(*self.raw) EQ 0 THEN BEGIN
+    PRINT,'ERROR: NO RAW DATA. Call loadFiles first.'
     RETURN
   ENDIF
 
-  juldays=julday(mol0.month[ind0],mol0.day[ind0],mol0.year[ind0],mol0.hour[ind0],0d0,0d0)
+  nRaw=(*self.raw).count()
+  IF MIN(elements) LT 0 OR MAX(elements) GE nRaw THEN BEGIN
+    PRINT,'ERROR: ELEMENTS OUT OF RANGE. '+STRTRIM(nRaw,2)+' molecule(s) loaded.'
+    RETURN
+  ENDIF
 
-  IF isFind THEN BEGIN
-    ;----- Occultations with no DMP match (ind2 EQ -1) are left as NaN rather than
-    ; silently picking up the last column of the DMP arrays. Levels above the
-    ; 75-level DMP grid are NaN for the same reason. -------;
-    nHarm=N_ELEMENTS(ind2)
-    jDMP=WHERE(ind2 GE 0,nDMP,COMPLEMENT=jNoDMP,NCOMPLEMENT=nNoDMP)
+  n_mols=N_ELEMENTS(elements)
+  nrat=n_mols-1
 
-    nlev=N_ELEMENTS(mol0.alt)
+  mol0=(*self.raw)[elements[0]]
+  nlev=N_ELEMENTS(mol0.alt)
+
+  ;----- An occultation is identified by its orbit number together with the
+  ; sunrise/sunset flag. Matching is done on that key by sorting each molecule
+  ; once and using VALUE_LOCATE. The previous implementation scanned one
+  ; molecule in full for every occultation of the other and grew its index
+  ; arrays by reallocation, which is quadratic, and it only ever looked at
+  ; elements[0] and elements[1] however many were passed. -------;
+  keys=LIST()
+  srts=LIST()
+  FOR m=0,n_mols-1 DO BEGIN
+    mol=(*self.raw)[elements[m]]
+    kk=LONG64(mol.orbit)*2LL+LONG64(mol.srss)
+    keys.add,kk
+    srts.add,SORT(kk)
+  ENDFOR
+
+  ;----- Start from the primary molecule and intersect with each of the others
+  ; in turn. Working down from the primary keeps the harmonized arrays in the
+  ; primary molecule's occultation order. -------;
+  ckeys=keys[0]
+  keep0=LINDGEN(N_ELEMENTS(ckeys))
+
+  FOR m=1,n_mols-1 DO BEGIN
+    ks=(keys[m])[srts[m]]
+    loc=VALUE_LOCATE(ks,ckeys)
+    g=WHERE(loc GE 0,ng)
+    IF ng GT 0 THEN hit=WHERE(ks[loc[g]] EQ ckeys[g],nhit) ELSE nhit=0
+    IF nhit EQ 0 THEN BEGIN
+      PRINT,'ERROR: NO OCCULTATIONS COMMON TO ALL '+STRTRIM(n_mols,2)+' MOLECULES'
+      RETURN
+    ENDIF
+    sel=g[hit]
+    ckeys=ckeys[sel]
+    keep0=keep0[sel]
+  ENDFOR
+
+  npass=N_ELEMENTS(ckeys)
+
+  ;----- Index into each molecule's own arrays for the surviving occultations.
+  ; Every key is now known to be present in every molecule, so VALUE_LOCATE
+  ; lands on an exact match. -------;
+  ind=LONARR(npass,n_mols)
+  ind[*,0]=keep0
+  FOR m=1,n_mols-1 DO BEGIN
+    ks=(keys[m])[srts[m]]
+    ind[*,m]=(srts[m])[VALUE_LOCATE(ks,ckeys)]
+  ENDFOR
+
+  ;----- Mixing ratios for every molecule stack along the third dimension, and
+  ; each subsequent molecule is ratioed against the primary. -------;
+  names=STRARR(n_mols)
+  mixrat=FLTARR(nlev,npass,n_mols)
+  mixrat_err=FLTARR(nlev,npass,n_mols)
+
+  FOR m=0,n_mols-1 DO BEGIN
+    mol=(*self.raw)[elements[m]]
+    names[m]=mol.name
+    mixrat[*,*,m]=mol.mixrat[*,ind[*,m]]
+    mixrat_err[*,*,m]=mol.mixrat_err[*,ind[*,m]]
+  ENDFOR
+
+  IF nrat GT 0 THEN BEGIN
+    ratio=FLTARR(nlev,npass,nrat)
+    FOR m=1,n_mols-1 DO ratio[*,*,m-1]=mixrat[*,*,m]/mixrat[*,*,0]
+  ENDIF
+
+  juldays=JULDAY(mol0.month[keep0],mol0.day[keep0],mol0.year[keep0],mol0.hour[keep0],0d0,0d0)
+
+  ;----- Potential temperature and temperature come from the DMP when one is
+  ; loaded, and from the retrieval itself otherwise. -------;
+  isDMP=0B
+  IF KEYWORD_SET(addDMP) THEN BEGIN
+    IF ~PTR_VALID(self.dmp) THEN BEGIN
+      PRINT,'ERROR: POINTER TO DMP NOT VALID'
+    ENDIF ELSE IF N_ELEMENTS(*self.dmp) EQ 0 THEN BEGIN
+      PRINT,'ERROR: DMP NOT LOADED'
+    ENDIF ELSE BEGIN
+      isDMP=1B
+    ENDELSE
+  ENDIF
+
+  IF isDMP THEN BEGIN
+
+    self.params.isDMP=1B
+
     nDMPlev=(SIZE((*self.dmp).theta,/DIMENSIONS))[0]
-
     IF nDMPlev GT nlev THEN BEGIN
       PRINT,'ERROR: DMP GRID HAS MORE LEVELS ('+STRTRIM(nDMPlev,2)+ $
             ') THAN THE RETRIEVAL GRID ('+STRTRIM(nlev,2)+')'
       RETURN
     ENDIF
 
-    pt=FLTARR(nlev,nHarm)+!VALUES.F_NAN
-    t_dmp=FLTARR(nlev,nHarm)+!VALUES.F_NAN
+    ;----- A matching DMP entry is not guaranteed to exist. Occultations without
+    ; one stay NaN rather than silently picking up the last DMP column, and so
+    ; do levels above the DMP's own vertical grid. -------;
+    pt=FLTARR(nlev,npass)+!VALUES.F_NAN
+    t_dmp=FLTARR(nlev,npass)+!VALUES.F_NAN
 
-    IF nDMP GT 0 THEN BEGIN
-      pt[0:nDMPlev-1,jDMP]=(*self.dmp).theta[*,ind2[jDMP]]
-      t_dmp[0:nDMPlev-1,jDMP]=(*self.dmp).temp[*,ind2[jDMP]]
+    dk=LONG64((*self.dmp).orbit)*2LL+LONG64((*self.dmp).srss)
+    ds=SORT(dk)
+    dks=dk[ds]
+
+    matched=BYTARR(npass)
+    dind=LONARR(npass)
+
+    loc=VALUE_LOCATE(dks,ckeys)
+    g=WHERE(loc GE 0,ng)
+    IF ng GT 0 THEN BEGIN
+      hit=WHERE(dks[loc[g]] EQ ckeys[g],nhit)
+      IF nhit GT 0 THEN BEGIN
+        matched[g[hit]]=1B
+        dind[g[hit]]=ds[loc[g[hit]]]
+      ENDIF
     ENDIF
 
-    IF nNoDMP GT 0 THEN PRINT,'WARNING: NO DMP MATCH FOR '+STRTRIM(nNoDMP,2)+' OF '+STRTRIM(nHarm,2)+' OCCULTATIONS'
+    jDMP=WHERE(matched,nDMP,NCOMPLEMENT=nNoDMP)
+    IF nDMP GT 0 THEN BEGIN
+      pt[0:nDMPlev-1,jDMP]=(*self.dmp).theta[*,dind[jDMP]]
+      t_dmp[0:nDMPlev-1,jDMP]=(*self.dmp).temp[*,dind[jDMP]]
+    ENDIF
+    IF nNoDMP GT 0 THEN PRINT,'WARNING: NO DMP MATCH FOR '+STRTRIM(nNoDMP,2)+ $
+                              ' OF '+STRTRIM(npass,2)+' OCCULTATIONS'
 
-    molout={nmols:n_mols,name0:mol0.name,name1:mol1.name,npass:n_elements(ind0),alt:mol0.alt,srss:mol0.srss[ind0],orbit:mol0.orbit[ind0],year:mol0.year[ind0],month:mol0.month[ind0],day:mol0.day[ind0],hour:mol0.hour[ind0],juldays:juldays,lat:mol0.lat[ind0],lon:mol0.lon[ind0],mixrat0:mol0.mixrat[*,ind0],mixrat0_err:mol0.mixrat_err[*,ind0],mixrat1:mol1.mixrat[*,ind1],ratio:mol1.mixrat[*,ind1]/mol0.mixrat[*,ind0],mixrat1_err:mol1.mixrat_err[*,ind1],temp:mol0.temp[*,ind0],pres:mol0.pres[*,ind0],pt:pt,t_dmp:t_dmp}
   ENDIF ELSE BEGIN
-    molout={nmols:n_mols,name0:mol0.name,name1:mol1.name,npass:n_elements(ind0),alt:mol0.alt,srss:mol0.srss[ind0],orbit:mol0.orbit[ind0],year:mol0.year[ind0],month:mol0.month[ind0],day:mol0.day[ind0],hour:mol0.hour[ind0],juldays:juldays,lat:mol0.lat[ind0],lon:mol0.lon[ind0],mixrat0:mol0.mixrat[*,ind0],mixrat0_err:mol0.mixrat_err[*,ind0],mixrat1:mol1.mixrat[*,ind1],ratio:mol1.mixrat[*,ind1]/mol0.mixrat[*,ind0],mixrat1_err:mol1.mixrat_err[*,ind1],temp:mol0.temp[*,ind0],pres:mol0.pres[*,ind0],pt:mol0.temp[*,ind0]*(1d0/mol0.pres[*,ind0])^.286d0,t_dmp:mol0.pres[*,ind0]*!Values.F_NAN} 
+
+    pt=mol0.temp[*,keep0]*(1d0/mol0.pres[*,keep0])^.286d0
+    t_dmp=mol0.pres[*,keep0]*!VALUES.F_NAN
+
   ENDELSE
-  
-endif else begin
 
-  juldays=julday(mol0.month,mol0.day,mol0.year,mol0.hour,0d0,0d0)
+  molout={nmols:n_mols,names:names,npass:npass,alt:mol0.alt, $
+          srss:mol0.srss[keep0],orbit:mol0.orbit[keep0], $
+          year:mol0.year[keep0],month:mol0.month[keep0], $
+          day:mol0.day[keep0],hour:mol0.hour[keep0],juldays:juldays, $
+          lat:mol0.lat[keep0],lon:mol0.lon[keep0], $
+          mixrat:mixrat,mixrat_err:mixrat_err, $
+          temp:mol0.temp[*,keep0],pres:mol0.pres[*,keep0], $
+          pt:pt,t_dmp:t_dmp}
 
-  molout={nmols:n_mols,name0:mol0.name,npass:mol0.npass,alt:mol0.alt,srss:mol0.srss,orbit:mol0.orbit,year:mol0.year,month:mol0.month,day:mol0.day,hour:mol0.hour,juldays:juldays,lat:mol0.lat,lon:mol0.lon,mixrat0:mol0.mixrat,mixrat0_err:mol0.mixrat_err,temp:mol0.temp,pres:mol0.pres,pt:mol0.temp*(1d0/mol0.pres)^.286d0,t_dmp:mol0.pres*!Values.F_NAN}
+  IF nrat GT 0 THEN molout=CREATE_STRUCT(molout,'ratio',ratio)
 
-endelse
-
-(*self.hmz)=molout
+  (*self.hmz)=molout
 
 end
 
@@ -1254,18 +1311,22 @@ ENDIF ELSE BEGIN
   inds=orbids
 ENDELSE
 
-CASE (*self.hmz).nmols OF
-  1: BEGIN
+;----- Mirrors the harmonized layout: mixing ratios stack along the third
+; dimension and ratios are held separately, so one build covers any number of
+; molecules. This replaced a CASE on nmols that had branches for 1 and 2 only
+; and no ELSE. -------;
+out={nmols:(*self.hmz).nmols,names:(*self.hmz).names,npass:nOccs, $
+     alt:(*self.hmz).alt,srss:(*self.hmz).srss[inds], $
+     orbit:(*self.hmz).orbit[inds],year:(*self.hmz).year[inds], $
+     month:(*self.hmz).month[inds],day:(*self.hmz).day[inds], $
+     hour:(*self.hmz).hour[inds],lat:(*self.hmz).lat[inds], $
+     lon:(*self.hmz).lon[inds], $
+     mixrat:(*self.hmz).mixrat[*,inds,*], $
+     mixrat_err:(*self.hmz).mixrat_err[*,inds,*], $
+     temp:(*self.hmz).temp[*,inds],pres:(*self.hmz).pres[*,inds], $
+     pt:(*self.hmz).pt[*,inds],t_dmp:(*self.hmz).t_dmp[*,inds]}
 
-    out={nmols:(*self.hmz).nmols,name0:(*self.hmz).name0,npass:nOccs,alt:(*self.hmz).alt,srss:(*self.hmz).srss[inds],orbit:(*self.hmz).orbit[inds],year:(*self.hmz).year[inds],month:(*self.hmz).month[inds],day:(*self.hmz).day[inds],hour:(*self.hmz).hour[inds],lat:(*self.hmz).lat[inds],lon:(*self.hmz).lon[inds],mixrat0:(*self.hmz).mixrat0[*,inds],mixrat0_err:(*self.hmz).mixrat0_err[*,inds],temp:(*self.hmz).temp[*,inds],pres:(*self.hmz).pres[*,inds],pt:(*self.hmz).pt[*,inds],t_dmp:(*self.hmz).t_dmp[*,inds]}
-
-  END
-  2: BEGIN
-
-    out={nmols:(*self.hmz).nmols,name0:(*self.hmz).name0,name1:(*self.hmz).name1,npass:nOccs,alt:(*self.hmz).alt,srss:(*self.hmz).srss[inds],orbit:(*self.hmz).orbit[inds],year:(*self.hmz).year[inds],month:(*self.hmz).month[inds],day:(*self.hmz).day[inds],hour:(*self.hmz).hour[inds],lat:(*self.hmz).lat[inds],lon:(*self.hmz).lon[inds],mixrat0:(*self.hmz).mixrat0[*,inds],mixrat0_err:(*self.hmz).mixrat0_err[*,inds],mixrat1:(*self.hmz).mixrat1[*,inds],mixrat1_err:(*self.hmz).mixrat1_err[*,inds],ratio:(*self.hmz).ratio[*,inds],temp:(*self.hmz).temp[*,inds],pres:(*self.hmz).pres[*,inds],pt:(*self.hmz).pt[*,inds],t_dmp:(*self.hmz).t_dmp[*,inds]}
-    ;stop
-  END
-ENDCASE
+IF (*self.hmz).nmols GT 1 THEN out=CREATE_STRUCT(out,'ratio',(*self.hmz).ratio[*,inds,*])
 
 RETURN,out
 
@@ -1541,30 +1602,34 @@ PRO ACEData::setErrorFlag,cutByTemp=cutByTemp,cutByRatio=cutByRatio
   nbad1=0
   nbad2=0
 
-  CASE (*self.hmz).nmols OF
-    1: BEGIN
+  ;----- Accumulate over all molecules rather than branching on a count. The
+  ; fill-value and pointwise-limit tests are ORed across molecules, so a point
+  ; is dropped if any molecule is bad there, and the scanwise test is ANDed, so
+  ; a scan is dropped only if every molecule exceeds the limit. Both match what
+  ; the old one- and two-molecule branches did. -------;
+  nmols=(*self.hmz).nmols
 
-      bad1=where((*self.hmz).mixrat0 eq -999. or (*self.hmz).mixrat0_err eq -999. or (*self.hmz).mixrat0_err eq -888.,nbad1)
-      IF self.params.cuttype.contains('pointwise',/FOLD_CASE) THEN BEGIN
-        bad2=where((*self.hmz).mixrat0_err ge self.params.eLim,nbad2)
-      ENDIF
-      IF self.params.cuttype.contains('scanwise',/FOLD_CASE) THEN BEGIN
-        jscan=WHERE((*self.hmz).mixrat0_err ge self.params.eLim,njscan)
-        IF njscan GT 0 THEN (*self.flags).eflag[jscan/nlev]=0
-      ENDIF
-    END
-    2: BEGIN
+  isBad=BYTARR(nlev,npass)
+  isOverPoint=BYTARR(nlev,npass)
+  isOverScan=BYTARR(nlev,npass)+1B
 
-      bad1=where((*self.hmz).mixrat0 eq -999. or (*self.hmz).mixrat0_err eq -999. or (*self.hmz).mixrat0_err eq -888. or (*self.hmz).mixrat1 eq -999. or (*self.hmz).mixrat1_err eq -999. or (*self.hmz).mixrat1_err eq -888.,nbad1)
-      IF self.params.cuttype.contains('pointwise',/FOLD_CASE) THEN BEGIN
-        bad2=where((*self.hmz).mixrat0_err ge self.params.eLim OR (*self.hmz).mixrat1_err ge self.params.eLim,nbad2)
-      ENDIF
-      IF self.params.cuttype.contains('scanwise',/FOLD_CASE) THEN BEGIN
-        jscan=WHERE((*self.hmz).mixrat0_err GE self.params.eLim AND (*self.hmz).mixrat1_err GE self.params.elim,njscan)
-        IF njscan GT 0 THEN (*self.flags).eflag[jscan/nlev]=0
-      ENDIF
-    END
-  ENDCASE
+  FOR m=0,nmols-1 DO BEGIN
+    mr=(*self.hmz).mixrat[*,*,m]
+    me=(*self.hmz).mixrat_err[*,*,m]
+    isBad OR= (mr EQ -999. OR me EQ -999. OR me EQ -888.)
+    isOverPoint OR= (me GE self.params.eLim)
+    isOverScan AND= (me GE self.params.eLim)
+  ENDFOR
+
+  bad1=WHERE(isBad,nbad1)
+
+  IF self.params.cuttype.contains('pointwise',/FOLD_CASE) THEN BEGIN
+    bad2=WHERE(isOverPoint,nbad2)
+  ENDIF
+  IF self.params.cuttype.contains('scanwise',/FOLD_CASE) THEN BEGIN
+    jscan=WHERE(isOverScan,njscan)
+    IF njscan GT 0 THEN (*self.flags).eflag[jscan/nlev]=0
+  ENDIF
 
   IF nbad1 GT 0 THEN (*self.flags).aflag[bad1]=0
   IF self.params.cuttype.contains('pointwise',/FOLD_CASE) THEN BEGIN
@@ -1778,11 +1843,16 @@ FUNCTION ACEData::blockTemplate
 
   COMPILE_OPT IDL2
 
-  D={nmols:(*self.hmz).nmols,name0:(*self.hmz).name0, $
+  nmols=(*self.hmz).nmols
+  nrat=nmols-1
+
+  ;----- mean, sd and bw carry one entry per molecule; meanRatio, sdRatio and
+  ; bwRatio carry one per ratio against the primary. -------;
+  D={nmols:nmols,names:(*self.hmz).names, $
      yearlims:[0d0,0d0],monthlims:[0d0,0d0],daylims:[0d0,0d0], $
      hourlims:[0d0,0d0],jullims:[0d0,0d0], $
      latlims:[0d0,0d0],lonlims:[0d0,0d0],altlims:[0d0,0d0], $
-     mean0:0.,sd0:0.,bw0:FLTARR(5), $
+     mean:FLTARR(nmols),sd:FLTARR(nmols),bw:FLTARR(5,nmols), $
      meant:0.,sdt:0.,bwt:FLTARR(5), $
      meanp:0.,sdp:0.,bwp:FLTARR(5), $
      meanpt:0.,sdpt:0.,bwpt:FLTARR(5), $
@@ -1790,8 +1860,21 @@ FUNCTION ACEData::blockTemplate
      meanLat:0.,sdLat:0.,meanLon:0.,sdLon:0., $
      nPts:0L,orbIDs:PTR_NEW()}
 
-  IF (*self.hmz).nmols GT 1 THEN BEGIN
-    D=CREATE_STRUCT(D,'mean1',0.,'sd1',0.,'bw1',FLTARR(5), $
+  IF nrat GT 0 THEN BEGIN
+    D=CREATE_STRUCT(D,'meanRatio',FLTARR(nrat),'sdRatio',FLTARR(nrat), $
+                      'bwRatio',FLTARR(5,nrat))
+  ENDIF
+
+  ;----- Legacy scalar aliases. These are what existing driver scripts and
+  ; interactive sessions read, so they are maintained alongside the arrays for
+  ; the first one or two molecules and the first ratio. They are plain scalars,
+  ; not one-element arrays, because (*self.blocks).mean0 on a struct array has
+  ; to keep returning one value per block. -------;
+  D=CREATE_STRUCT(D,'name0',(*self.hmz).names[0],'mean0',0.,'sd0',0.,'bw0',FLTARR(5))
+
+  IF nmols GT 1 THEN BEGIN
+    D=CREATE_STRUCT(D,'name1',(*self.hmz).names[1], $
+                      'mean1',0.,'sd1',0.,'bw1',FLTARR(5), $
                       'meanRat',0.,'sdRat',0.,'bwRat',FLTARR(5))
   ENDIF
 
@@ -1862,6 +1945,18 @@ PRO ACEData::emptyBlock,i,j,k,l
 
   nan=!VALUES.F_NAN
   nanbw=FLTARR(5)+nan
+  nmols=(*self.hmz).nmols
+  nrat=nmols-1
+
+  (*self.blocks)[i,j,k,l].mean=FLTARR(nmols)+nan
+  (*self.blocks)[i,j,k,l].sd=FLTARR(nmols)+nan
+  (*self.blocks)[i,j,k,l].bw=FLTARR(5,nmols)+nan
+
+  IF nrat GT 0 THEN BEGIN
+    (*self.blocks)[i,j,k,l].meanRatio=FLTARR(nrat)+nan
+    (*self.blocks)[i,j,k,l].sdRatio=FLTARR(nrat)+nan
+    (*self.blocks)[i,j,k,l].bwRatio=FLTARR(5,nrat)+nan
+  ENDIF
 
   (*self.blocks)[i,j,k,l].mean0=nan
   (*self.blocks)[i,j,k,l].sd0=nan
@@ -1884,7 +1979,7 @@ PRO ACEData::emptyBlock,i,j,k,l
   (*self.blocks)[i,j,k,l].sdLon=nan
   (*self.blocks)[i,j,k,l].nPts=0
 
-  IF (*self.hmz).nmols GT 1 THEN BEGIN
+  IF nmols GT 1 THEN BEGIN
     (*self.blocks)[i,j,k,l].mean1=nan
     (*self.blocks)[i,j,k,l].sd1=nan
     (*self.blocks)[i,j,k,l].bw1=nanbw
@@ -1953,12 +2048,61 @@ PRO ACEData::reduceBlock,i,j,k,l,c,passIdx,levLo,levHi
   finOrbs=kGood/nSubLev
   selOrbs=passIdx[finOrbs]
 
-  mr0g=(c.mr0[levLo:levHi,passIdx])[kGood]
+  nmols=(*self.hmz).nmols
+  nrat=nmols-1
+
+  ;----- One pass over the molecules, and one over the ratios, instead of a
+  ; hardcoded primary plus optional second molecule. -------;
+  bmean=FLTARR(nmols)
+  bsd=FLTARR(nmols)+!VALUES.F_NAN
+  bbw=FLTARR(5,nmols)
+
+  FOR m=0,nmols-1 DO BEGIN
+    mg=(c.mr[levLo:levHi,passIdx,m])[kGood]
+    bmean[m]=mean(mg)
+    IF ndat GE 2 THEN bsd[m]=stddev(mg)
+    IF ndat GE 5 THEN bbw[*,m]=createboxplotdata(mg)
+  ENDFOR
+
+  (*self.blocks)[i,j,k,l].mean=bmean
+  (*self.blocks)[i,j,k,l].sd=bsd
+  IF ndat GE 5 THEN (*self.blocks)[i,j,k,l].bw=bbw
+
+  IF nrat GT 0 THEN BEGIN
+    rmean=FLTARR(nrat)
+    rsd=FLTARR(nrat)+!VALUES.F_NAN
+    rbw=FLTARR(5,nrat)
+    FOR m=0,nrat-1 DO BEGIN
+      rg=(c.rat[levLo:levHi,passIdx,m])[kGood]
+      rmean[m]=mean(rg)
+      IF ndat GE 2 THEN rsd[m]=stddev(rg)
+      IF ndat GE 5 THEN rbw[*,m]=createboxplotdata(rg)
+    ENDFOR
+    (*self.blocks)[i,j,k,l].meanRatio=rmean
+    (*self.blocks)[i,j,k,l].sdRatio=rsd
+    IF ndat GE 5 THEN (*self.blocks)[i,j,k,l].bwRatio=rbw
+  ENDIF
+
+  ;----- Legacy scalar aliases, kept in step with the arrays above. -------;
+  (*self.blocks)[i,j,k,l].mean0=bmean[0]
+  (*self.blocks)[i,j,k,l].sd0=bsd[0]
+  IF ndat GE 5 THEN (*self.blocks)[i,j,k,l].bw0=bbw[*,0]
+
+  IF nmols GT 1 THEN BEGIN
+    (*self.blocks)[i,j,k,l].mean1=bmean[1]
+    (*self.blocks)[i,j,k,l].sd1=bsd[1]
+    (*self.blocks)[i,j,k,l].meanRat=rmean[0]
+    (*self.blocks)[i,j,k,l].sdRat=rsd[0]
+    IF ndat GE 5 THEN BEGIN
+      (*self.blocks)[i,j,k,l].bw1=bbw[*,1]
+      (*self.blocks)[i,j,k,l].bwRat=rbw[*,0]
+    ENDIF
+  ENDIF
+
   tempg=(c.temp[levLo:levHi,passIdx])[kGood]
   presg=(c.pres[levLo:levHi,passIdx])[kGood]
   ptg=(c.pt[levLo:levHi,passIdx])[kGood]
   tdmpg=(c.tdmp[levLo:levHi,passIdx])[kGood]
-  (*self.blocks)[i,j,k,l].mean0=mean(mr0g)
   (*self.blocks)[i,j,k,l].meant=mean(tempg)
   (*self.blocks)[i,j,k,l].meanp=mean(presg)
   (*self.blocks)[i,j,k,l].meanpt=mean(ptg)
@@ -1966,13 +2110,11 @@ PRO ACEData::reduceBlock,i,j,k,l,c,passIdx,levLo,levHi
 
   ;----- STDDEV requires at least two points. -------;
   IF ndat GE 2 THEN BEGIN
-    (*self.blocks)[i,j,k,l].sd0=stddev(mr0g)
     (*self.blocks)[i,j,k,l].sdt=stddev(tempg)
     (*self.blocks)[i,j,k,l].sdp=stddev(presg)
     (*self.blocks)[i,j,k,l].sdpt=stddev(ptg)
     (*self.blocks)[i,j,k,l].sdt_dmp=stddev(tdmpg)
   ENDIF ELSE BEGIN
-    (*self.blocks)[i,j,k,l].sd0=!VALUES.F_NAN
     (*self.blocks)[i,j,k,l].sdt=!VALUES.F_NAN
     (*self.blocks)[i,j,k,l].sdp=!VALUES.F_NAN
     (*self.blocks)[i,j,k,l].sdpt=!VALUES.F_NAN
@@ -1984,30 +2126,10 @@ PRO ACEData::reduceBlock,i,j,k,l,c,passIdx,levLo,levHi
   (*self.blocks)[i,j,k,l].nPts=ndat
   ;stop
   if ndat ge 5 then begin
-    (*self.blocks)[i,j,k,l].bw0=createboxplotdata(mr0g)
     (*self.blocks)[i,j,k,l].bwt=createboxplotdata(tempg)
     (*self.blocks)[i,j,k,l].bwp=createboxplotdata(presg)
     (*self.blocks)[i,j,k,l].bwpt=createboxplotdata(ptg)
     IF self.params.isDMP THEN (*self.blocks)[i,j,k,l].bwt_dmp=createboxplotdata(tdmpg)
-  endif
-  if (*self.hmz).nmols gt 1 then begin
-    mr1g=(c.mr1[levLo:levHi,passIdx])[kGood]
-    rat0g=(c.rat[levLo:levHi,passIdx])[kGood]
-    (*self.blocks)[i,j,k,l].mean1=mean(mr1g)
-    (*self.blocks)[i,j,k,l].meanRat=mean(rat0g)
-
-    IF ndat GE 2 THEN BEGIN
-      (*self.blocks)[i,j,k,l].sd1=stddev(mr1g)
-      (*self.blocks)[i,j,k,l].sdRat=stddev(rat0g)
-    ENDIF ELSE BEGIN
-      (*self.blocks)[i,j,k,l].sd1=!VALUES.F_NAN
-      (*self.blocks)[i,j,k,l].sdRat=!VALUES.F_NAN
-    ENDELSE
-
-    if ndat ge 5 then begin
-      (*self.blocks)[i,j,k,l].bw1=createboxplotdata(mr1g)
-      (*self.blocks)[i,j,k,l].bwRat=createboxplotdata(rat0g)
-    endif
   endif
   ;stop
   ;(*(*self.blocks)[i,j,k,l].orbIDs)=(*self.hmz).orbit[startOrbs[finOrbs]]
@@ -2108,7 +2230,7 @@ FUNCTION ACEData::reduceCache
 
   c={nStart:nStart,startOrbs:startOrbs, $
      aflag:(*self.flags).aflag[*,startOrbs], $
-     mr0:(*self.hmz).mixrat0[*,startOrbs], $
+     mr:(*self.hmz).mixrat[*,startOrbs,*], $
      temp:(*self.hmz).temp[*,startOrbs], $
      pres:(*self.hmz).pres[*,startOrbs], $
      pt:(*self.hmz).pt[*,startOrbs], $
@@ -2118,8 +2240,7 @@ FUNCTION ACEData::reduceCache
      jul:(*self.hmz).juldays[startOrbs]}
 
   IF (*self.hmz).nmols GT 1 THEN BEGIN
-    c=CREATE_STRUCT(c,'mr1',(*self.hmz).mixrat1[*,startOrbs], $
-                       'rat',(*self.hmz).ratio[*,startOrbs])
+    c=CREATE_STRUCT(c,'rat',(*self.hmz).ratio[*,startOrbs,*])
   ENDIF
 
   RETURN,c
@@ -2390,13 +2511,31 @@ END
 ;
 ;-
 
-PRO ACEData::makeContour,ratPlot,mol0Plot,aLevels,useMedian=useMedian
+PRO ACEData::makeContour,ratPlot,mol0Plot,aLevels,useMedian=useMedian, $
+                         molIndex=molIndex,ratIndex=ratIndex
 
   COMPILE_OPT IDL2
 
   IF ~PTR_VALID(self.blocks) || N_ELEMENTS(*self.blocks) EQ 0 THEN BEGIN
     PRINT,'ERROR: NO REDUCED DATA. Call calcBlocks first.'
     RETURN
+  ENDIF
+
+  ;----- Which molecule and which ratio to draw, for the case of more than two
+  ; molecules. Both default to the first, so two-molecule calls are unaffected.
+  ; -------;
+  IF N_ELEMENTS(molIndex) EQ 0 THEN molIndex=0
+  IF N_ELEMENTS(ratIndex) EQ 0 THEN ratIndex=0
+
+  IF molIndex LT 0 OR molIndex GE (*self.hmz).nmols THEN BEGIN
+    PRINT,'ERROR: molIndex OUT OF RANGE. '+STRTRIM((*self.hmz).nmols,2)+' molecule(s) harmonized.'
+    RETURN
+  ENDIF
+  IF (*self.hmz).nmols GT 1 THEN BEGIN
+    IF ratIndex LT 0 OR ratIndex GE (*self.hmz).nmols-1 THEN BEGIN
+      PRINT,'ERROR: ratIndex OUT OF RANGE. '+STRTRIM((*self.hmz).nmols-1,2)+' ratio(s) available.'
+      RETURN
+    ENDIF
   ENDIF
 
   alt_map=aLevels             ;currently only one level at a time is supported
@@ -2408,7 +2547,7 @@ PRO ACEData::makeContour,ratPlot,mol0Plot,aLevels,useMedian=useMedian
   ;defines the color scale base on altitude, and could probably use further tweaks. --------;
   posit=[0.05,0.1,0.87,0.96]
   dim=[1280,580]
-  case (*self.hmz).name0 of
+  case (*self.hmz).names[0] of
     'H2O': BEGIN
       nlevs=16d0
       case alt_map of
@@ -2431,7 +2570,7 @@ PRO ACEData::makeContour,ratPlot,mol0Plot,aLevels,useMedian=useMedian
       ; blocks. This CASE previously had no ELSE, so loading anything but H2O
       ; or CO2 crashed here. -------;
       nlevs=16d0
-      blockMean=(*self.blocks).mean0
+      blockMean=(*self.blocks).mean[molIndex]
       kfin=WHERE(FINITE(blockMean),nfin)
       IF nfin EQ 0 THEN MESSAGE,'No finite block means to contour.'
       lo=MIN(blockMean[kfin])*1d6
@@ -2449,7 +2588,7 @@ PRO ACEData::makeContour,ratPlot,mol0Plot,aLevels,useMedian=useMedian
   lons=(dindgen(self.params.nLons)+0.5d0)/self.params.nLons*(self.params.lonLims[1]-self.params.lonLims[0])+self.params.lonLims[0]
   
   if (*self.hmz).nmols gt 1 then begin
-    if keyword_set(useMedian) then rats=(*self.blocks).bwRat[2] else rats=(*self.blocks).meanRat
+    if keyword_set(useMedian) then rats=(*self.blocks).bwRatio[2,ratIndex] else rats=(*self.blocks).meanRatio[ratIndex]
     if keyword_set(savPlotRat) then mapRat=map('Geographic',center_longitude=180,limit=[-75,0,75,360],dimensions=dim,position=posit,font_size=18,/buffer) else mapRat=map('Geographic',center_longitude=180,limit=[-75,0,75,360],dimensions=dim,position=posit,font_size=18)
     ;stop
     ratios=interpolate(transpose((rats-1d0)*1d3),dindgen(self.params.nLons),dindgen(self.params.nLats),/grid)
@@ -2463,10 +2602,10 @@ PRO ACEData::makeContour,ratPlot,mol0Plot,aLevels,useMedian=useMedian
     grid.font_size=16
     grid.label_position=0
     ;----- Label the ratio with delta notation only for the H2O/HDO pair. -----;
-    IF (*self.hmz).name0 EQ 'H2O' AND (*self.hmz).name1 EQ 'HDO' THEN BEGIN
+    IF (*self.hmz).names[0] EQ 'H2O' AND (*self.hmz).names[ratIndex+1] EQ 'HDO' THEN BEGIN
       ratLabel='$\delta D$'
     ENDIF ELSE BEGIN
-      ratLabel=(*self.hmz).name1+'/'+(*self.hmz).name0
+      ratLabel=(*self.hmz).names[ratIndex+1]+'/'+(*self.hmz).names[0]
     ENDELSE
     mapRat.title=self.params.mth_str+' '+ratLabel+', '+string(alt_map,format='(F4.1)')+' km'
       mapRat.font_size=18
@@ -2480,7 +2619,7 @@ PRO ACEData::makeContour,ratPlot,mol0Plot,aLevels,useMedian=useMedian
     ;stop
   endif
   if keyword_set(savPlot0) then map0=map('Geographic',center_longitude=180,limit=[-75,0,75,360],dimensions=dim,position=posit,font_size=18,/buffer) else map0=map('Geographic',center_longitude=180,limit=[-75,0,75,360],dimensions=dim,position=posit,font_size=18)
-  if keyword_set(useMedian) then mol0=(*self.blocks).bw0[2] else mol0=(*self.blocks).mean0
+  if keyword_set(useMedian) then mol0=(*self.blocks).bw[2,molIndex] else mol0=(*self.blocks).mean[molIndex]
   mol0s=interpolate(transpose(mol0*1d6),dindgen(self.params.nLons),dindgen(self.params.nLats),/grid)
   ;cc=contour(mol0*1d6,(*self.blocks).meanLon,(*self.blocks).meanLat,c_value=mol0range,rgb_table=ct,/fill,/overplot)
   cc=contour(mol0s,lons,lats,c_value=mol0range,rgb_table=ct,/fill,/overplot)
@@ -2490,9 +2629,9 @@ PRO ACEData::makeContour,ratPlot,mol0Plot,aLevels,useMedian=useMedian
   grid.linestyle='dotted'
   grid.font_size=16
   grid.label_position=0
-  map0.title=self.params.mth_str+' '+(*self.hmz).name0+', '+string(alt_map,format='(F4.1)')+' km'
+  map0.title=self.params.mth_str+' '+(*self.hmz).names[0]+', '+string(alt_map,format='(F4.1)')+' km'
     map0.font_size=18
-  cb=colorbar(target=cc,title=(*self.hmz).name0+' (ppm)',range=[mol0range[0],mol0range[n_elements(mol0range)-1]],orientation=1,textpos=1,font_size=14)
+  cb=colorbar(target=cc,title=(*self.hmz).names[0]+' (ppm)',range=[mol0range[0],mol0range[n_elements(mol0range)-1]],orientation=1,textpos=1,font_size=14)
   mol0Plot=map0
 
   if keyword_set(savPlot0) then begin
@@ -2544,9 +2683,13 @@ end
 ;   Written by: Ben Clouser, 3/22/21
 ;-
 
-PRO ACEData::makeMeridianPlot,ratPlot,mol0Plot,useMedian=useMedian,lats=lats,alts=alts,title=title,dimensions=dimensions,position=position,fs=fs
+PRO ACEData::makeMeridianPlot,ratPlot,mol0Plot,useMedian=useMedian,lats=lats,alts=alts,title=title,dimensions=dimensions,position=position,fs=fs, $
+                              molIndex=molIndex,ratIndex=ratIndex
 
   COMPILE_OPT IDL2
+
+  IF N_ELEMENTS(molIndex) EQ 0 THEN molIndex=0
+  IF N_ELEMENTS(ratIndex) EQ 0 THEN ratIndex=0
 
   IF NOT KEYWORD_SET(title) THEN title=''
   IF NOT KEYWORD_SET(dimensions) THEN dims=[1024,1024] ELSE dims=dimensions
@@ -2555,7 +2698,7 @@ PRO ACEData::makeMeridianPlot,ratPlot,mol0Plot,useMedian=useMedian,lats=lats,alt
   
   ct=colortable(72,/reverse)
 
-  if keyword_set(useMedian) then rats=(*self.blocks).bwRat[2] else rats=(*self.blocks).meanRat
+  if keyword_set(useMedian) then rats=(*self.blocks).bwRatio[2,ratIndex] else rats=(*self.blocks).meanRatio[ratIndex]
   n_longs=self.params.nLons
   alts=(self.params.altlims[1]-self.params.altlims[0])/self.params.nAlts*dindgen(self.params.nAlts)+self.params.altlims[0]+.5
   alts=transpose(rebin(alts,self.params.nAlts,self.params.nLats))
@@ -2571,7 +2714,7 @@ PRO ACEData::makeMeridianPlot,ratPlot,mol0Plot,useMedian=useMedian,lats=lats,alt
 
   endfor
 
-  if keyword_set(useMedian) then mol0=(*self.blocks).bw0[2] else mol0=(*self.blocks).mean0
+  if keyword_set(useMedian) then mol0=(*self.blocks).bw[2,molIndex] else mol0=(*self.blocks).mean[molIndex]
   n_longs=self.params.nLons
   alts=(self.params.altlims[1]-self.params.altlims[0])/self.params.nAlts*dindgen(self.params.nAlts)+self.params.altlims[0]+.5
   alts=transpose(rebin(alts,self.params.nAlts,self.params.nLats))
@@ -2627,13 +2770,15 @@ END
 ;   Written by: Ben Clouser, 6/30/22
 ;-
 
-PRO ACEData::makeTimeSeries,ratPlot,mol0Plot,useMedian=useMedian
+PRO ACEData::makeTimeSeries,ratPlot,mol0Plot,useMedian=useMedian,ratIndex=ratIndex
 
   COMPILE_OPT IDL2
 
+  IF N_ELEMENTS(ratIndex) EQ 0 THEN ratIndex=0
+
   ct=colortable(72,/reverse)
 
-  if keyword_set(useMedian) then rats=(*self.blocks).bwRat[2] else rats=(*self.blocks).meanRat
+  if keyword_set(useMedian) then rats=(*self.blocks).bwRatio[2,ratIndex] else rats=(*self.blocks).meanRatio[ratIndex]
   n_longs=self.params.nLons
   alts=(self.params.altlims[1]-self.params.altlims[0])/self.params.nAlts*dindgen(self.params.nAlts)+self.params.altlims[0]+.5
   alts=transpose(rebin(alts,self.params.nAlts,self.params.nLats))
@@ -2657,11 +2802,14 @@ PRO ACEData::makeZonalPlot,mols,prof,xaxis,yaxis,yearlims=yearlims,monthlims=mon
 
 END
 
-PRO ACEData::makeHeightTimePlot,mol0,rat0,alt_map=alt_map,yearlims=yearlims,monthlims=monthlims,hourlims=hourlims,latlims=latlims,lonlims=lonlims,n_lats=n_lats,n_longs=n_longs,ratio=ratio,ratlims=ratlims,raw=raw,acecut=acecut,fullcut=fullcut,xrange=xrange
+PRO ACEData::makeHeightTimePlot,mol0,rat0,alt_map=alt_map,yearlims=yearlims,monthlims=monthlims,hourlims=hourlims,latlims=latlims,lonlims=lonlims,n_lats=n_lats,n_longs=n_longs,ratio=ratio,ratlims=ratlims,raw=raw,acecut=acecut,fullcut=fullcut,xrange=xrange, $
+                                  molIndex=molIndex,ratIndex=ratIndex
 
   COMPILE_OPT IDL2
 
   IF NOT KEYWORD_SET(xrange) THEN xrange=[]
+  IF N_ELEMENTS(molIndex) EQ 0 THEN molIndex=0
+  IF N_ELEMENTS(ratIndex) EQ 0 THEN ratIndex=0
   
   dayLast=julday(self.params.monthlims[1],self.params.daylims[1],self.params.yearlims[1],self.params.hourlims[1],0,0)
   dayFirst=julday(self.params.monthlims[0],self.params.daylims[0],self.params.yearlims[0],self.params.hourlims[0],0,0)
@@ -2683,23 +2831,89 @@ PRO ACEData::makeHeightTimePlot,mol0,rat0,alt_map=alt_map,yearlims=yearlims,mont
   ;stop
   ;times=dindgen(self.params.nTimes)
   times=rebin(times,self.params.nTimes,self.params.nAlts)
-  mol0=contour(transpose(reform((*self.blocks).bw0[2],nAlts,nTimes))*1d6,times,alts,c_value=[dindgen(22)]*.25+3d0,xrange=xrange,yrange=[10,40],font_size=18,axis_style=2,xthick=2,ythick=2,xtitle='Year',ytitle='Altitude (km)',rgb_table=colortable(72,/reverse),dimensions=[1024,1024],position=[0.1,0.1,0.85,0.9],/fill)
+  mol0=contour(transpose(reform((*self.blocks).bw[2,molIndex],nAlts,nTimes))*1d6,times,alts,c_value=[dindgen(22)]*.25+3d0,xrange=xrange,yrange=[10,40],font_size=18,axis_style=2,xthick=2,ythick=2,xtitle='Year',ytitle='Altitude (km)',rgb_table=colortable(72,/reverse),dimensions=[1024,1024],position=[0.1,0.1,0.85,0.9],/fill)
   cb=colorbar(target=mol0,title='$H_2O (ppm)$',range=[3,8.25],orientation=1,textpos=1,font_size=14)
 
-  rat0=contour((transpose(reform((*self.blocks).bwrat[2],nAlts,nTimes))-1d0)*1d3,times,alts,c_value=([dindgen(22)]/21d0*0.63d0-.76d0)*1d3,xrange=xrange,yrange=[10,40],font_size=18,axis_style=2,xthick=2,ythick=2,xtitle='Year',ytitle='Altitude (km)',rgb_table=colortable(72,/reverse),dimensions=[1024,1024],position=[0.1,0.1,0.85,0.9],/fill)
+  rat0=contour((transpose(reform((*self.blocks).bwRatio[2,ratIndex],nAlts,nTimes))-1d0)*1d3,times,alts,c_value=([dindgen(22)]/21d0*0.63d0-.76d0)*1d3,xrange=xrange,yrange=[10,40],font_size=18,axis_style=2,xthick=2,ythick=2,xtitle='Year',ytitle='Altitude (km)',rgb_table=colortable(72,/reverse),dimensions=[1024,1024],position=[0.1,0.1,0.85,0.9],/fill)
   cb=colorbar(target=rat0,title='$\delta D (‰)$',range=[-.760,-.130]*1d3,orientation=1,textpos=1,font_size=14)
   ;stop
+END
+
+;+
+; =============================================================
+;
+; METHODNAME:
+;       ACEData::selParse
+;
+; PURPOSE:
+;       The ACEData::selParse procedure method is a private method and is not
+;       intended to be called directly. It maps a plotting selector name onto a
+;       kind and an index, so that the plotting methods extend to any number of
+;       harmonized molecules without a branch per molecule.
+;
+;           'mol0', 'mol1', 'mol2', ...   kind 'mol', index as written
+;           'delta', 'delta0', 'delta1'   kind 'rat', index as written, 0 if bare
+;           anything else                 kind is the name itself, index -1
+;
+;       So the selectors that existed before keep their meaning: 'mol0' and
+;       'mol1' are the first two molecules and a bare 'delta' is the first
+;       ratio against the primary.
+;
+; MODIFICATION HISTORY:
+;   Written by: Ben Clouser, 8/4/25
+;-
+
+PRO ACEData::selParse,sname,kind,index
+
+  COMPILE_OPT IDL2
+
+  index=-1L
+  kind=sname
+
+  mm=STREGEX(sname,'^mol([0-9]+)$',/SUBEXPR,/EXTRACT)
+  IF mm[0] NE '' THEN BEGIN
+    kind='mol'
+    index=LONG(mm[1])
+    RETURN
+  ENDIF
+
+  mm=STREGEX(sname,'^delta([0-9]*)$',/SUBEXPR,/EXTRACT)
+  IF mm[0] NE '' THEN BEGIN
+    kind='rat'
+    IF mm[1] EQ '' THEN index=0L ELSE index=LONG(mm[1])
+    RETURN
+  ENDIF
+
 END
 
 pro ACEData::makeMeanSD,xname,yname,spag,savPlot=savPlot,spaghetti=spaghetti,colorby=colorby,outcols=outcols,title=title,nomean=nomean
 
   COMPILE_OPT IDL2
 
+  IF ~PTR_VALID(self.blocks) || N_ELEMENTS(*self.blocks) EQ 0 THEN BEGIN
+    PRINT,'ERROR: NO REDUCED DATA. Call calcBlocks first.'
+    RETURN
+  ENDIF
+
   ct=colortable(72,/reverse)
-  nspg=n_elements(insrat)
   IF NOT KEYWORD_SET(title) THEN title=''
-      
-      CASE yname OF
+
+  nmols=(*self.hmz).nmols
+  names=(*self.hmz).names
+
+  self.selParse,xname,xkind,xidx
+  self.selParse,yname,ykind,yidx
+
+  IF xkind EQ 'mol' && (xidx GE nmols) THEN $
+    MESSAGE,'xname '+xname+' but only '+STRTRIM(nmols,2)+' molecule(s) harmonized.'
+  IF ykind EQ 'mol' && (yidx GE nmols) THEN $
+    MESSAGE,'yname '+yname+' but only '+STRTRIM(nmols,2)+' molecule(s) harmonized.'
+  IF xkind EQ 'rat' && (xidx GE nmols-1) THEN $
+    MESSAGE,'xname '+xname+' but only '+STRTRIM(nmols-1,2)+' ratio(s) available.'
+  IF ykind EQ 'rat' && (yidx GE nmols-1) THEN $
+    MESSAGE,'yname '+yname+' but only '+STRTRIM(nmols-1,2)+' ratio(s) available.'
+
+      CASE ykind OF
         'alt':BEGIN
           ymean=self.params.altlims[0]+dindgen(self.params.nAlts)+0.5d0
           ytitle='Altitude (km)'
@@ -2710,12 +2924,19 @@ pro ACEData::makeMeanSD,xname,yname,spag,savPlot=savPlot,spaghetti=spaghetti,col
           ytitle='$\Theta (K)$'
           yrange=[300,500]
         END
-        'mol0':BEGIN
-          ymean=reform((*self.blocks).mean0*1d6,self.params.nAlts)
-          ysd=reform((*self.blocks).sd0*1d6,self.params.nAlts)
-          ybw=reform((*self.blocks).bw0,5,self.params.nAlts)
-          ytitle='$H_2O (ppm)$'
+        'mol':BEGIN
+          ymean=reform((*self.blocks).mean[yidx]*1d6,self.params.nAlts)
+          ysd=reform((*self.blocks).sd[yidx]*1d6,self.params.nAlts)
+          ybw=reform((*self.blocks).bw[*,yidx],5,self.params.nAlts)
+          ytitle=names[yidx]+' (ppm)'
           yrange=[0,100]
+        END
+        'rat':BEGIN
+          ymean=reform(((*self.blocks).meanRatio[yidx]-1d0)*1d3,self.params.nAlts)
+          ysd=reform((*self.blocks).sdRatio[yidx]*1d3,self.params.nAlts)
+          ybw=reform(((*self.blocks).bwRatio[*,yidx]-1d0)*1d3,5,self.params.nAlts)
+          ytitle=names[yidx+1]+'/'+names[0]+' ($10^{-3}$)'
+          yrange=[-2000,1000]
         END
         'temp':BEGIN
           ymean=reform((*self.blocks).meant,self.params.nAlts)
@@ -2725,29 +2946,28 @@ pro ACEData::makeMeanSD,xname,yname,spag,savPlot=savPlot,spaghetti=spaghetti,col
           yrange=[180,270]
         END
         ELSE: MESSAGE,'Unrecognised yname: '+STRTRIM(yname,2)+ $
-                      '. Expected one of alt, pt, mol0, temp.'
+                      '. Expected alt, pt, temp, mol<n> or delta<n>.'
       ENDCASE
 
-      CASE xname OF
-        'delta':BEGIN
-          xmean=reform(((*self.blocks).meanrat-1d0)*1d3,self.params.nAlts)
-          xsd=reform(((*self.blocks).sdrat)*1d3,self.params.nAlts)
-          xbw=reform(((*self.blocks).bwrat-1d0)*1d3,5,self.params.nAlts)
-          xtitle='$\delta D (‰)$'
+      CASE xkind OF
+        'rat':BEGIN
+          xmean=reform(((*self.blocks).meanRatio[xidx]-1d0)*1d3,self.params.nAlts)
+          xsd=reform((*self.blocks).sdRatio[xidx]*1d3,self.params.nAlts)
+          xbw=reform(((*self.blocks).bwRatio[*,xidx]-1d0)*1d3,5,self.params.nAlts)
+          ;----- Keep delta notation for the H2O/HDO pair, otherwise name the
+          ; two molecules involved. -------;
+          IF names[0] EQ 'H2O' AND names[xidx+1] EQ 'HDO' THEN BEGIN
+            xtitle='$\delta D (‰)$'
+          ENDIF ELSE BEGIN
+            xtitle=names[xidx+1]+'/'+names[0]+' ($10^{-3}$)'
+          ENDELSE
           xrange=[-2000,1000]
         END
-        'mol0':BEGIN
-          xmean=reform((*self.blocks).mean0*1d6,self.params.nAlts)
-          xsd=reform((*self.blocks).sd0*1d6,self.params.nAlts)
-          xbw=reform((*self.blocks).bw0,5,self.params.nAlts)
-          xtitle='$H_2O (ppm)$'
-          xrange=[0,500]
-        END
-        'mol1':BEGIN
-          xmean=reform((*self.blocks).mean1*1d6,self.params.nAlts)
-          xsd=reform((*self.blocks).sd1*1d6,self.params.nAlts)
-          xbw=reform((*self.blocks).bw1,5,self.params.nAlts)
-          xtitle='$HDO (ppm)$'
+        'mol':BEGIN
+          xmean=reform((*self.blocks).mean[xidx]*1d6,self.params.nAlts)
+          xsd=reform((*self.blocks).sd[xidx]*1d6,self.params.nAlts)
+          xbw=reform((*self.blocks).bw[*,xidx],5,self.params.nAlts)
+          xtitle=names[xidx]+' (ppm)'
           xrange=[0,500]
         END
         'temp':BEGIN
@@ -2765,7 +2985,7 @@ pro ACEData::makeMeanSD,xname,yname,spag,savPlot=savPlot,spaghetti=spaghetti,col
           xrange=[0,1]
         END
         ELSE: MESSAGE,'Unrecognised xname: '+STRTRIM(xname,2)+ $
-                      '. Expected one of delta, mol0, mol1, temp, pres.'
+                      '. Expected temp, pres, mol<n> or delta<n>.'
       ENDCASE
 
       if keyword_set(savPlot) then spag=boxplot(ymean,xbw,xtitle=xtitle,ytitle=ytitle,font_size=16,xthick=2,ythick=2,/horizontal,xrange=xrange,yrange=yrange,dimensions=[640,720],title=title,/buffer) else spag=boxplot(ymean,xbw,xtitle=xtitle,ytitle=ytitle,font_size=16,xthick=2,ythick=2,/horizontal,xrange=xrange,yrange=yrange,dimensions=[640,720],title=title)
@@ -2817,19 +3037,19 @@ pro ACEData::makeMeanSD,xname,yname,spag,savPlot=savPlot,spaghetti=spaghetti,col
       ; the subscripts out showed that the pt case was reading orbs.pt[jk],
       ; which indexes the flattened 2-D array and so always returned the first
       ; occultation regardless of is. -------;
-      CASE yname OF
+      CASE ykind OF
         'alt':  ydat=orbs.alt[jk]
         'pt':   ydat=orbs.pt[jk,is]
-        'mol0': ydat=orbs.mixrat0[jk,is]*1d6
+        'mol':  ydat=orbs.mixrat[jk,is,yidx]*1d6
+        'rat':  ydat=(orbs.ratio[jk,is,yidx]-1d0)*1d3
         'temp': ydat=orbs.temp[jk,is]
       ENDCASE
 
-      CASE xname OF
-        'delta': xdat=(orbs.ratio[jk,is]-1d0)*1d3
-        'mol0':  xdat=orbs.mixrat0[jk,is]*1d6
-        'mol1':  xdat=orbs.mixrat1[jk,is]*1d6
-        'temp':  xdat=orbs.temp[jk,is]
-        'pres':  xdat=orbs.pres[jk,is]
+      CASE xkind OF
+        'rat':  xdat=(orbs.ratio[jk,is,xidx]-1d0)*1d3
+        'mol':  xdat=orbs.mixrat[jk,is,xidx]*1d6
+        'temp': xdat=orbs.temp[jk,is]
+        'pres': xdat=orbs.pres[jk,is]
       ENDCASE
 
       p=plot(xdat,ydat,transparency=85,color=color,/overplot)
@@ -2837,8 +3057,8 @@ pro ACEData::makeMeanSD,xname,yname,spag,savPlot=savPlot,spaghetti=spaghetti,col
       IF KEYWORD_SET(outcols) THEN BEGIN
         onecall=DBLARR(3,N_ELEMENTS(jk))
         onecall[0,*]=orbs.alt[jk]
-        onecall[1,*]=orbs.mixrat0[jk,is]
-        onecall[2,*]=(orbs.ratio[jk,is]-1d0)*1d3
+        onecall[1,*]=orbs.mixrat[jk,is,0]
+        onecall[2,*]=(orbs.ratio[jk,is,0]-1d0)*1d3
         ;stop
         outcol.add,onecall
       ENDIF
@@ -2945,9 +3165,11 @@ pro ACEData::makeMeanSDTP,xname,yname,savPlot=savPlot
 
 end
 
-PRO ACEData::makeSpotMap,alts,altlims=altlims,outplot=outplot,postfix=postfix
+PRO ACEData::makeSpotMap,alts,altlims=altlims,outplot=outplot,postfix=postfix,ratIndex=ratIndex
 
   COMPILE_OPT IDL2
+
+  IF N_ELEMENTS(ratIndex) EQ 0 THEN ratIndex=0
 
 IF NOT KEYWORD_SET(altlims) THEN alims=DINDGEN(28)+12.5 ELSE alims=DINDGEN(altlims[1]-altlims[0]+1)+altlims[0]
 IF NOT KEYWORD_SET(postfix) THEN postfix=''
@@ -2982,7 +3204,7 @@ FOR i=0,nAlts-1 DO BEGIN
     CONTINUE
   ENDIF
   ;stop
-  dd=(orbs.ratio[kAlt,*]-1d0)*1d3
+  dd=(orbs.ratio[kAlt,*,ratIndex]-1d0)*1d3
   p=plot(orbs.lon,orbs.lat,'.',sym_filled=1,sym_size=10,vert_colors=BYTSCL(dd,min=-760,max=-300),rgb_table=colortable(72,/reverse),font_size=18,title=STRING(alts[i],FORMAT='(F5.1)')+' km',/overplot)
 ENDFOR
 
